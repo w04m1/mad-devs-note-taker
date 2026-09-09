@@ -24,3 +24,47 @@ process merely because its database is temporarily down.
 
 **Evidence.** The shared contract fixes both endpoint paths, and PostgreSQL is the authoritative store
 in `PLAN.md`.
+
+## 2026-04-01: relational schema and initial migration
+
+**Decision.** Materialize every finite occurrence as a `notes` row and add every entity listed in
+`PLAN.md`. UUIDs are generated in the application, instants use timezone-aware SQLAlchemy columns
+(`TIMESTAMPTZ` on PostgreSQL), mutable aggregates use mapper version counters, and JSON payloads use
+JSONB on PostgreSQL. Reminder offsets and delivery states exactly match `docs/contracts.md`.
+
+**Alternatives.** Virtual recurrence expansion was rejected because it complicates complete search,
+pagination, and durable scheduling. Database-generated UUIDs were rejected to avoid requiring another
+extension. Native PostgreSQL arrays for offsets were rejected because rules and delivery cycles need
+stable row identity.
+
+**Evidence.** Metadata compilation tests verify the entities, constraints, timezone flags, and frozen
+reminder contract without requiring PostgreSQL. The schema uses database uniqueness for recurrence
+keys, reminder cycles, notifications, and associations, rather than relying only on service code.
+
+## 2026-04-01: search and migration portability boundary
+
+**Decision.** Store a generated lowercase title/body search expression and apply a PostgreSQL
+`pg_trgm` GIN index. The initial Alembic migration enables `pg_trgm` and creates the reviewed metadata.
+Application model types remain compilable for non-PostgreSQL unit tests, while production migrations
+explicitly target PostgreSQL.
+
+**Alternatives.** PostgreSQL full-text search adds stemming and language configuration that conflict
+with predictable literal English/Russian substring matching. Plain `ILIKE` needs no extension but does
+not meet the several-thousand-row responsive-search goal. A handwritten operation for every initial
+column would duplicate the reviewed declarative metadata; later migrations will use Alembic
+autogeneration and review.
+
+**Evidence.** PostgreSQL documents `pg_trgm` support for indexed `LIKE`/`ILIKE` searches. `PLAN.md`
+selects trigram substring matching and PostgreSQL as the authoritative store.
+
+## 2026-04-01: demo email configuration validation
+
+**Decision.** Store the configured default email as a string at settings-load time and validate it at
+the API/domain boundary later. This preserves the frozen `demo@example.test` local default.
+
+**Alternatives.** Pydantic `EmailStr` was tested, but its current validator rejects the reserved `.test`
+domain even though that address is intentional for Mailpit. Changing the address would break the
+environment contract. Disabling deliverability checks is not exposed by `EmailStr`.
+
+**Evidence.** A settings construction test failed specifically because `example.test` is reserved; the
+contract explicitly requires `demo@example.test`. SMTP configuration still controls actual delivery.
