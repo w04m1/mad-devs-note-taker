@@ -20,45 +20,55 @@ from app.db.models import (
 from app.domain.common import due_at, utcnow
 
 
+async def notes_response(session: AsyncSession, notes: list[Note]) -> list[NoteResponse]:
+    if not notes:
+        return []
+    note_ids = [note.id for note in notes]
+    tag_rows = (
+        await session.execute(
+            select(NoteTag.note_id, Tag)
+            .join(Tag, Tag.id == NoteTag.tag_id)
+            .where(NoteTag.note_id.in_(note_ids))
+            .order_by(Tag.name, Tag.id)
+        )
+    ).all()
+    offset_rows = (
+        await session.execute(
+            select(ReminderRule.note_id, ReminderRule.offset_minutes)
+            .where(ReminderRule.note_id.in_(note_ids), ReminderRule.enabled.is_(True))
+            .order_by(ReminderRule.offset_minutes)
+        )
+    ).all()
+    tags_by_note: dict[uuid.UUID, list[TagResponse]] = {note_id: [] for note_id in note_ids}
+    offsets_by_note: dict[uuid.UUID, list[int]] = {note_id: [] for note_id in note_ids}
+    for note_id, tag in tag_rows:
+        tags_by_note[note_id].append(
+            TagResponse(id=tag.id, name=tag.name, color=tag.color, version=tag.version)
+        )
+    for note_id, offset in offset_rows:
+        offsets_by_note[note_id].append(offset)
+    return [
+        NoteResponse(
+            id=note.id,
+            title=note.title,
+            body=note.body,
+            starts_at=note.starts_at,
+            active=note.active,
+            tags=tags_by_note[note.id],
+            reminder_offsets_minutes=offsets_by_note[note.id],
+            version=note.version,
+            created_at=note.created_at,
+            updated_at=note.updated_at,
+            deleted_at=note.deleted_at,
+            series_id=note.series_id,
+            recurrence_key=note.recurrence_key,
+        )
+        for note in notes
+    ]
+
+
 async def note_response(session: AsyncSession, note: Note) -> NoteResponse:
-    tags = (
-        (
-            await session.execute(
-                select(Tag)
-                .join(NoteTag, NoteTag.tag_id == Tag.id)
-                .where(NoteTag.note_id == note.id)
-                .order_by(Tag.name, Tag.id)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    offsets = (
-        (
-            await session.execute(
-                select(ReminderRule.offset_minutes)
-                .where(ReminderRule.note_id == note.id, ReminderRule.enabled.is_(True))
-                .order_by(ReminderRule.offset_minutes)
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return NoteResponse(
-        id=note.id,
-        title=note.title,
-        body=note.body,
-        starts_at=note.starts_at,
-        active=note.active,
-        tags=[TagResponse(id=t.id, name=t.name, color=t.color, version=t.version) for t in tags],
-        reminder_offsets_minutes=list(offsets),
-        version=note.version,
-        created_at=note.created_at,
-        updated_at=note.updated_at,
-        deleted_at=note.deleted_at,
-        series_id=note.series_id,
-        recurrence_key=note.recurrence_key,
-    )
+    return (await notes_response(session, [note]))[0]
 
 
 async def require_note(session: AsyncSession, note_id: uuid.UUID, *, lock: bool = False) -> Note:
@@ -163,8 +173,10 @@ async def reconcile_reminders(
             }:
                 current.state = DeliveryState.cancelled
             continue
+        was_enabled = rule.enabled
         rule.enabled = True
-        if schedule_changed:
+        cycle_changed = schedule_changed or not was_enabled
+        if cycle_changed:
             if current is not None and current.state in {
                 DeliveryState.pending,
                 DeliveryState.claimed,

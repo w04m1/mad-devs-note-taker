@@ -33,6 +33,7 @@ from app.domain.notes import (
     check_note_version,
     lock_series,
     note_response,
+    notes_response,
     reconcile_reminders,
     replace_tags,
     require_note,
@@ -447,7 +448,7 @@ async def list_notes(
         ).scalars()
     )
     return Page(
-        items=[(await note_response(session, row)).model_dump(mode="json") for row in rows],
+        items=[item.model_dump(mode="json") for item in await notes_response(session, rows)],
         total=total,
         page=page,
         page_size=page_size,
@@ -488,7 +489,7 @@ async def calendar(
     )
     if len(rows) > 5000:
         raise ApiError(413, "range_too_large", "Too many calendar notes; narrow the range")
-    return [await note_response(session, row) for row in rows]
+    return await notes_response(session, rows)
 
 
 async def _note_group(session: AsyncSession, conditions: list, page: int, page_size: int) -> Page:
@@ -507,7 +508,7 @@ async def _note_group(session: AsyncSession, conditions: list, page: int, page_s
         ).scalars()
     )
     return Page(
-        items=[(await note_response(session, row)).model_dump(mode="json") for row in rows],
+        items=[item.model_dump(mode="json") for item in await notes_response(session, rows)],
         total=total,
         page=page,
         page_size=page_size,
