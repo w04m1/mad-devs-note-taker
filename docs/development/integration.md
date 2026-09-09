@@ -39,3 +39,11 @@
 - **Alternative and tradeoff:** Keeping subset startup instructions would be conservative but false and would hide the now-working reminder processes.
 - **Evidence:** Fresh volumes; `migrate` exited 0 at `0003_background`; seven services healthy; proxied readiness returned `{"status":"ok"}`; worker returned `pong`.
 - **Deviations or unresolved work:** Deeper failure/restart and cross-process tests remain assigned to the QA workstream.
+
+## 2026-09-09T19:25:46Z — Verify real reminder delivery through Mailpit
+
+- **Problem or decision:** Unit fakes and healthy processes do not prove that due discovery, Celery authorization, SMTP, and persistent notification creation work together.
+- **Chosen approach and reason:** On the fresh integrated stack, create a note through the frontend `/api/v1` proxy with `starts_at` eight seconds after its 10-minute reminder became due, then inspect Mailpit and notification history after Beat/worker processing.
+- **Alternative and tradeoff:** Calling the worker helper directly is faster but does not prove Beat, Redis, SMTP, proxy, or deployed configuration.
+- **Evidence:** Note `ce69ad83-9f4c-4b47-b4d2-58f184cebf09`; one Mailpit message to `demo@example.test` with stable `Message-ID` `24325b70-0336-4c8b-af5a-f414704229f9.1@notetaker.local`; notification `7d0d7910-745e-4a22-b441-18bb3fcda6cf` for the same delivery. Mailpit total was exactly one when checked.
+- **Deviations or unresolved work:** This is a manual smoke result. The QA workstream still owns an automated real-SMTP regression and restart/failure evidence.
