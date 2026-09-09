@@ -8,5 +8,5 @@ try:
     with urllib.request.urlopen(url, timeout=2) as response:
         if not 200 <= response.status < 300:
             raise SystemExit(1)
-except Exception:
+except OSError:
     raise SystemExit(1)

@@ -24,13 +24,22 @@
 - **Evidence:** `backend/uv.lock` has no Celery package and `backend/app/jobs/celery_app.py` does not exist. `./scripts/smoke.sh` exits 2 with a precise gate message.
 - **Deviations or unresolved work:** Seven-long-lived-service smoke validation is blocked on the backend Celery workstream. Database, migration, backend tests, frontend build, and Compose validation remain independently testable.
 
+
+## 2026-09-09 — Health probe exception boundary
+
+- **Problem or decision:** The first integration lint command targeted `app`, `migrations`, and `tests`, so it missed `backend/docker-healthcheck.py`. The exact repository-wide Ruff check reported `BLE001` because the probe caught every `Exception`.
+- **Chosen approach and reason:** Catch `OSError`, which covers `urllib.error.URLError`, `HTTPError`, socket errors, DNS failures, refused connections, and timeouts from this fixed HTTP probe. Let programming errors surface instead of converting them into a generic unhealthy result.
+- **Alternative and tradeoff:** A `BLE001` suppression or continued broad catch would keep all failures mapped to unhealthy, but could hide defects in the probe itself. Listing `URLError`, `HTTPError`, and timeout classes separately is noisier because those URL exceptions already inherit from `OSError`.
+- **Evidence:** Python runtime inheritance inspection confirms `URLError` and `HTTPError` derive from `OSError`. `cd backend && uv run --frozen ruff check .` and the locked backend test suite both pass after the narrow change.
+- **Deviations or unresolved work:** None.
+
 ## Verification record
 
 - `./scripts/compose-config.sh`: passed with all eight service definitions.
 - `docker compose build backend`: passed with Python 3.12.7, uv 0.5.11, and `uv sync --frozen`.
 - `docker compose build frontend`: passed with Node 22.13.1, pnpm 11.21.0, and `pnpm install --frozen-lockfile`.
 - Backend locked pytest: 6 passed; two upstream Starlette/FastAPI deprecation warnings remain.
-- Backend Ruff: passed.
+- Exact repository-wide backend lint, `cd backend && uv run --frozen ruff check .`: passed.
 - Frontend Vitest: 12 passed across four files.
 - Frontend production build: passed; Vite transformed 1,968 modules.
 - PostgreSQL 16.4 became healthy and `docker compose run --rm migrate` applied revision `0001` using `PostgresqlImpl`.
