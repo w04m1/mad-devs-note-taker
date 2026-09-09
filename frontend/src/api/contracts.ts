@@ -23,4 +23,4 @@ export interface RecurrenceSeries { id: UUID; lineage_id: UUID; predecessor_id: 
 export interface SeriesMutationVersion { expected_version: number }
 export interface SeriesSplit extends SeriesCreate { recurrence_key: string; expected_version: number; expected_occurrence_version: number }
 export interface CalendarParams { starts_from: ISODateTime; starts_to: ISODateTime }
-export interface UpcomingResponse { today: Note[]; this_week: Note[]; past: Note[]; server_now: ISODateTime; next_transition_at: ISODateTime | null }
+export interface UpcomingResponse { today: Page<Note>; week: Page<Note>; past: Page<Note>; server_now: ISODateTime; next_transition_at: ISODateTime | null }

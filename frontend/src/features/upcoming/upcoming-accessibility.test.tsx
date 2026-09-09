@@ -6,7 +6,7 @@ import type { Note, UpcomingResponse } from "../../api/contracts";
 
 const upcomingMock = vi.hoisted(() => vi.fn());
 const note: Note = { id: "n1", title: "Accessible meeting", body: "", starts_at: "2026-01-01T10:00:00Z", active: true, tags: [], reminder_offsets_minutes: [], version: 1, created_at: "", updated_at: "", deleted_at: null, series_id: null, recurrence_key: null };
-const response: UpcomingResponse = { today: [note], this_week: [], past: [], server_now: "2026-01-01T09:00:00Z", next_transition_at: "2026-01-01T10:00:00Z" };
+const response: UpcomingResponse = { today: {items:[note],total:1,page:1,page_size:50}, week: {items:[],total:0,page:1,page_size:50}, past: {items:[],total:0,page:1,page_size:50}, server_now: "2026-01-01T09:00:00Z", next_transition_at: "2026-01-01T10:00:00Z" };
 vi.mock("../../api/client", async original => {
   const actual = await original<typeof import("../../api/client")>();
   return { ...actual, api: { ...actual.api, upcoming: upcomingMock } };
