@@ -10,21 +10,34 @@ import { Field, Input } from "../../components/ui/input";
 type Draft = { title: string; body: string; starts_at: string; active: boolean; tag_ids: string[]; reminder_offsets_minutes: ReminderOffset[] };
 const localDate = (iso: string, timezone: string) => DateTime.fromISO(iso,{setZone:true}).setZone(timezone).toFormat("yyyy-LL-dd\'T\'HH:mm");
 const initial = (timezone:string,note?: Note): Draft => note ? { title:note.title, body:note.body, starts_at:localDate(note.starts_at,timezone), active:note.active, tag_ids:note.tags.map(t=>t.id), reminder_offsets_minutes:note.reminder_offsets_minutes } : { title:"", body:"", starts_at:localDate(new Date(Date.now()+3600000).toISOString(),timezone), active:true, tag_ids:[], reminder_offsets_minutes:[] };
-export function manualNoteInstant(value: string, timezone: string): string | null {
+export function manualNoteChoices(value: string, timezone: string): string[] {
   const local=DateTime.fromISO(value,{zone:timezone});
-  if(!local.isValid||local.toFormat("yyyy-LL-dd'T'HH:mm")!==value)return null;
-  const candidates=local.getPossibleOffsets();
-  const earliest=candidates.reduce((first,candidate)=>candidate.toMillis()<first.toMillis()?candidate:first,local);
-  return earliest.toISO();
+  if(!local.isValid||local.toFormat("yyyy-LL-dd'T'HH:mm")!==value)return [];
+  return local.getPossibleOffsets()
+    .sort((left,right)=>left.toMillis()-right.toMillis())
+    .map(candidate=>candidate.toISO())
+    .filter((candidate,index,all)=>candidate!==null&&all.indexOf(candidate)===index) as string[];
 }
+export function manualNoteInstant(value: string, timezone: string, overlapChoice?: string | null): string | null {
+  const candidates=manualNoteChoices(value,timezone);
+  if(candidates.length===0)return null;
+  if(candidates.length===1)return candidates[0]!;
+  return overlapChoice&&candidates.includes(overlapChoice)?overlapChoice:null;
+}
+const offsetLabel=(candidate:string,index:number)=>{
+  const instant=DateTime.fromISO(candidate,{setZone:true});
+  return `${index===0?"First":"Second"} occurrence — UTC${instant.toFormat("ZZ")} (${instant.toUTC().toFormat("HH:mm 'UTC'")})`;
+};
 function payload(draft: Draft, startsAt: string): NoteWrite { return {...draft, starts_at:startsAt}; }
 export function NoteForm({ note, tags, timezone, onSaved, onCancel }: { note?: Note; tags: Tag[]; timezone: string; onSaved: () => void; onCancel: () => void }) {
   // Deliberately initialize once. Query invalidation/realtime rerenders must not overwrite a dirty draft.
   const [draft,setDraft]=useState<Draft>(()=>initial(timezone,note));
   const [errors,setErrors]=useState<Record<string,string>>({});
+  const [overlapChoice,setOverlapChoice]=useState<string|null>(null);
+  const overlapChoices=manualNoteChoices(draft.starts_at,timezone);
   const mutations=useNoteMutations(); const mutation=note?mutations.update:mutations.create;
   const [conflict,setConflict]=useState<unknown>(null);
-  const submit=async(e:FormEvent)=>{e.preventDefault();setErrors({});setConflict(null);const startsAt=manualNoteInstant(draft.starts_at,timezone);if(startsAt===null){setErrors({starts_at:"This local time does not exist in the selected timezone."});return;}const parsed=noteFormSchema.safeParse(payload(draft,startsAt));if(!parsed.success){setErrors(Object.fromEntries(parsed.error.issues.map(i=>[String(i.path[0]),i.message])));return;}try{if(note){const expected_series_version=note.series_id?(await api.series.get(note.series_id)).version:undefined;await mutations.update.mutateAsync({id:note.id,value:{...parsed.data,expected_version:note.version,...(expected_series_version===undefined?{}:{expected_series_version})}});}else await mutations.create.mutateAsync(parsed.data);onSaved();}catch(error){if(error instanceof ApiError&&error.status===409)setConflict(error.body.current);else setErrors({form:error instanceof Error?error.message:"Save failed"});}};
+  const submit=async(e:FormEvent)=>{e.preventDefault();setErrors({});setConflict(null);const startsAt=manualNoteInstant(draft.starts_at,timezone,overlapChoice);if(startsAt===null){setErrors({starts_at:overlapChoices.length>1?"Choose which occurrence of this local time to use.":"This local time does not exist in the selected timezone."});return;}const parsed=noteFormSchema.safeParse(payload(draft,startsAt));if(!parsed.success){setErrors(Object.fromEntries(parsed.error.issues.map(i=>[String(i.path[0]),i.message])));return;}try{if(note){const expected_series_version=note.series_id?(await api.series.get(note.series_id)).version:undefined;await mutations.update.mutateAsync({id:note.id,value:{...parsed.data,expected_version:note.version,...(expected_series_version===undefined?{}:{expected_series_version})}});}else await mutations.create.mutateAsync(parsed.data);onSaved();}catch(error){if(error instanceof ApiError&&error.status===409)setConflict(error.body.current);else setErrors({form:error instanceof Error?error.message:"Save failed"});}};
   const toggleTag=(id:string)=>setDraft(d=>({...d,tag_ids:d.tag_ids.includes(id)?d.tag_ids.filter(x=>x!==id):[...d.tag_ids,id]}));
   const toggleReminder=(value:ReminderOffset)=>setDraft(d=>({...d,reminder_offsets_minutes:d.reminder_offsets_minutes.includes(value)?d.reminder_offsets_minutes.filter(x=>x!==value):[...d.reminder_offsets_minutes,value]}));
   return <form className="grid gap-4 rounded-lg border bg-white p-5 shadow-sm" onSubmit={submit} aria-label={note?"Edit note":"Create note"}>
@@ -33,7 +46,12 @@ export function NoteForm({ note, tags, timezone, onSaved, onCancel }: { note?: N
     {errors.form&&<p role="alert" className="text-red-700">{errors.form}</p>}
     <Field label="Title" error={errors.title}><Input value={draft.title} onChange={e=>setDraft({...draft,title:e.target.value})}/></Field>
     <Field label="Body" error={errors.body}><textarea className="min-h-28 rounded-md border border-slate-300 p-3" value={draft.body} onChange={e=>setDraft({...draft,body:e.target.value})}/></Field>
-    <Field label="Date and time" error={errors.starts_at}><Input type="datetime-local" value={draft.starts_at} onChange={e=>setDraft({...draft,starts_at:e.target.value})}/></Field>
+    <Field label="Date and time" error={errors.starts_at}><Input type="datetime-local" value={draft.starts_at} onChange={e=>{setDraft({...draft,starts_at:e.target.value});setOverlapChoice(null);setErrors(previous=>({...previous,starts_at:""}))}}/></Field>
+    {overlapChoices.length>1&&<fieldset className="grid gap-2 rounded-md border border-amber-400 bg-amber-50 p-3">
+      <legend className="px-1 text-sm font-medium">This time occurs twice. Choose one.</legend>
+      <p className="text-sm text-slate-700">Timezone: {timezone}. The UTC offsets lead to different reminder times.</p>
+      {overlapChoices.map((candidate,index)=><label key={candidate} className="flex gap-2 text-sm"><input type="radio" name="starts-at-overlap" value={candidate} required checked={overlapChoice===candidate} onChange={()=>{setOverlapChoice(candidate);setErrors(previous=>({...previous,starts_at:""}))}}/> {offsetLabel(candidate,index)}</label>)}
+    </fieldset>}
     <label className="flex gap-2"><input type="checkbox" checked={draft.active} onChange={e=>setDraft({...draft,active:e.target.checked})}/> Active</label>
     <fieldset><legend className="mb-1 text-sm font-medium">Tags</legend><div className="flex flex-wrap gap-3">{tags.map(tag=><label key={tag.id} className="flex items-center gap-1 text-sm"><input type="checkbox" checked={draft.tag_ids.includes(tag.id)} onChange={()=>toggleTag(tag.id)}/><span className="size-3 rounded-full" style={{backgroundColor:tag.color}}/>{tag.name}</label>)}</div></fieldset>
     <fieldset><legend className="mb-1 text-sm font-medium">Reminders</legend><div className="flex flex-wrap gap-3">{([[10,"10 minutes"],[60,"1 hour"],[1440,"1 day"]] as const).map(([value,label])=><label key={value} className="text-sm"><input type="checkbox" checked={draft.reminder_offsets_minutes.includes(value)} onChange={()=>toggleReminder(value)}/> {label}</label>)}</div></fieldset>

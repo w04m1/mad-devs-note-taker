@@ -14,8 +14,8 @@ Status is based on code present on this branch and the evidence in [verification
 
 ## Known deviations and limits
 
-- **DST overlap input:** The plan calls for a manual overlap selector showing both possible instants. The current UI instead chooses the earlier instant deterministically. API clients can select either instant by sending an explicit offset. DST gaps are rejected.
-- **Frontend bundle:** The current production build passes but emits a chunk warning. The main JavaScript chunk is 793.95 kB minified (240.31 kB gzip). Code splitting has not been done.
+- **DST overlap input:** Manual note entry shows both valid offset-qualified occurrences for an ambiguous fall-back wall time and requires an explicit radio selection. DST gaps are rejected. Recurring schedules continue to select the earlier instant by contract.
+- **Frontend bundle:** The current production build passes but emits a chunk warning. The main JavaScript chunk is 795.00 kB minified (240.68 kB gzip). Code splitting has not been done.
 - **OpenAPI/TypeScript:** FastAPI publishes OpenAPI and focused tests pin selected response shapes. The frontend still uses handwritten contract-shaped DTOs. Generic `Page` does not encode a concrete item type, so this is partial contract protection, not complete OpenAPI client generation.
 - **Email guarantee:** A real reminder reached Mailpit in one manual integrated check. Automated real-SMTP regression is pending. PostgreSQL and SMTP cannot guarantee exactly-once receipt; ambiguous post-authorization outcomes are not retried.
 - **Realtime:** Redis Pub/Sub is non-replaying. Clients recover by refetching on reconnect/focus. Multi-process fanout and Redis outage recovery still need final QA evidence.

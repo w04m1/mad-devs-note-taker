@@ -42,11 +42,11 @@
 
 ## 2026-09-09: Manual wall-clock DST policy and narrow deviation
 
-**Decision.** Preserve the backend contract that ordinary note `starts_at` is an offset-qualified instant. A naive datetime is rejected with 422. The browser converts a `datetime-local` value in the profile IANA timezone, rejects a spring-forward gap by wall-clock round-trip, and chooses the earlier instant for a fall-back overlap.
+**Decision.** Preserve the backend contract that ordinary note `starts_at` is an offset-qualified instant. A naive datetime is rejected with 422. The browser converts a `datetime-local` value in the profile IANA timezone and rejects a spring-forward gap by wall-clock round-trip. For a fall-back overlap it requires the user to choose one of both valid offset-qualified instants.
 
-**Narrow honest deviation.** PLAN asks the manual-entry UI to show both overlap choices and require a selection. This UI does not yet expose that selector. It deterministically selects the earlier overlap, matching recurrence behavior. API clients can still choose either overlap instant by sending the desired explicit offset. We did not weaken the aware-instant API to accept ambiguous naive values.
+**Resolved follow-up.** The manual-entry UI now shows both overlap choices with their UTC offsets and requires an explicit selection. It sends the selected offset-qualified instant. We did not weaken the aware-instant API to accept ambiguous naive values; recurring schedules still use their separate earlier-instant rule.
 
-**Evidence.** The note-form unit test covers the Budapest 2026 gap and overlap. The PostgreSQL HTTP test rejects a naive manual datetime.
+**Evidence.** The note-form tests cover the Budapest 2026 gap, both overlap choices, the accessible radio group, required selection, and the selected request offset. The PostgreSQL HTTP test rejects a naive manual datetime.
 
 ## 2026-09-09: Contract evidence scope
 

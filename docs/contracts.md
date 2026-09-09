@@ -41,7 +41,7 @@ Series creation includes template note fields, `local_start`, IANA `timezone`, `
 
 ### Manual datetime implementation note
 
-Ordinary-note HTTP timestamps still require an explicit UTC offset. The current UI rejects nonexistent local wall times and deterministically selects the earlier instant for an ambiguous overlap. It does not yet present the two overlap choices required by the full PLAN behavior; API callers can select either by sending its explicit offset. This narrow deviation is tested and recorded in `docs/development/contract-hardening.md`.
+Ordinary-note HTTP timestamps require an explicit UTC offset. The UI rejects nonexistent local wall times. For an ambiguous fall-back wall time, it presents both valid offsets and requires the user to select one before saving. The selected offset-qualified instant is sent to the API. Recurring schedules retain their separate contract: generated ambiguous occurrences use the earlier instant.
 
 ## Reminder state machine
 
