@@ -11,14 +11,14 @@ async function setTimezone(request:any,timezone:string){const current=await (awa
 function localParts(iso:string,zone:string){const parts=new Intl.DateTimeFormat("en-CA",{timeZone:zone,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(new Date(iso)); return Object.fromEntries(parts.map(p=>[p.type,p.value]));}
 
 test("realtime edits reach a second client and Upcoming moves a note to past",async({browser,request})=>{
-  const crossing=await createNote(request,"Crossing soon",new Date(Date.now()+5_000));
+  const crossing=await createNote(request,"Crossing soon",new Date(Date.now()+10_000));
   await createNote(request,"Realtime original",new Date(Date.now()+3_600_000));
   const a=await client(browser), b=await client(browser);
   await openApp(b,"/upcoming"); await expect(b.getByText("Realtime original",{exact:true})).toBeVisible();
+  const past=b.getByRole("region",{name:/Past active/}); await expect(b.getByText(crossing.title,{exact:true})).toBeVisible(); await expect(past.getByText(crossing.title,{exact:true})).toHaveCount(0);
   await openApp(a,"/notes"); await editCard(a,"Realtime original","Realtime changed");
   await expect(b.getByText("Realtime changed",{exact:true})).toBeVisible({timeout:8_000});
-  const past=b.getByRole("region",{name:/Past active/});
-  await expect(past.getByText(crossing.title,{exact:true})).toBeVisible({timeout:12_000});
+  await expect(past.getByText(crossing.title,{exact:true})).toBeVisible({timeout:15_000});
 });
 
 test("a due reminder toasts once per tab, emails once, and persists without replay",async({browser,request})=>{
