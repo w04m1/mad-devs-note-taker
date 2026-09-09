@@ -1,0 +1,4 @@
+import { Slot } from "@radix-ui/react-slot"; import { cva, type VariantProps } from "class-variance-authority"; import type { ButtonHTMLAttributes } from "react"; import { cn } from "../../lib/utils";
+const variants=cva("inline-flex min-h-10 items-center justify-center rounded-md px-4 py-2 text-sm font-semibold transition disabled:pointer-events-none disabled:opacity-50",{variants:{variant:{default:"bg-blue-700 text-white hover:bg-blue-800",outline:"border border-slate-300 bg-white hover:bg-slate-100",ghost:"hover:bg-slate-100"}},defaultVariants:{variant:"default"}});
+export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement>,VariantProps<typeof variants>{asChild?:boolean}
+export function Button({className,variant,asChild=false,...props}:ButtonProps){const Component=asChild?Slot:"button";return <Component className={cn(variants({variant}),className)} {...props}/>}

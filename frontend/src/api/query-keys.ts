@@ -1,0 +1,2 @@
+import type { NoteListParams } from "./contracts";
+export const queryKeys={notes:{all:["notes"] as const,list:(params:NoteListParams)=>["notes","list",params] as const,detail:(id:string)=>["notes","detail",id] as const},calendar:{all:["calendar"] as const},upcoming:{all:["upcoming"] as const},trash:{all:["trash"] as const},tags:{all:["tags"] as const},settings:{all:["settings"] as const},notifications:{all:["notifications"] as const},series:{all:["series"] as const}};

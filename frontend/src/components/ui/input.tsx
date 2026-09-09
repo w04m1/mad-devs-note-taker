@@ -1,0 +1,3 @@
+import { forwardRef, type InputHTMLAttributes } from "react"; import { cn } from "../../lib/utils";
+export const Input=forwardRef<HTMLInputElement,InputHTMLAttributes<HTMLInputElement>>(({className,...props},ref)=><input ref={ref} className={cn("min-h-10 w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm",className)} {...props}/>); Input.displayName="Input";
+export function Field({label,error,children}:{label:string;error?:string;children:React.ReactNode}){return <label className="grid gap-1 text-sm font-medium">{label}{children}{error&&<span role="alert" className="text-red-700">{error}</span>}</label>}
