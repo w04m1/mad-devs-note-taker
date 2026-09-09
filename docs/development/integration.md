@@ -23,3 +23,11 @@
 - **Alternative and tradeoff:** Retaining compatibility aliases would reduce the merge edit but would allow undocumented environment names to persist and drift.
 - **Evidence:** Backend lint and tests after the merge; focused integration commit.
 - **Deviations or unresolved work:** The simultaneous first-settings-request race remains documented for a later hardening pass.
+
+## 2026-09-09T18:51:43Z — Linearize recurrence and cleanup migrations
+
+- **Problem or decision:** Recurrence and background branches independently added migrations after `0001`, and their merged note fields produced a duplicate `ix_notes_purged_at` declaration during a fresh schema build.
+- **Chosen approach and reason:** Order the lifecycle migrations as `0001 -> 0002_recurrence -> 0003_background`. Keep the explicit table-level purge index and remove the duplicate column-level index flag. This yields one Alembic head and one stable index name.
+- **Alternative and tradeoff:** An Alembic merge revision would retain parallel heads, but these branches are being integrated before release and have a natural dependency: cleanup must understand recurrence markers.
+- **Evidence:** Fresh-volume `docker compose up --build` migration gate and full backend checks after the focused fix.
+- **Deviations or unresolved work:** Revision `0001` still imports mutable ORM metadata; the QA workstream owns replacement with immutable operations.

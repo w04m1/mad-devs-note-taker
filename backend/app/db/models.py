@@ -118,7 +118,7 @@ class Note(Base, TimestampMixin, VersionMixin):
     # Identifies notes deleted by a reversible series-portion trash action.
     series_trashed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # Retained technical marker after user-visible trash content is permanently purged.
-    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     series_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("recurrence_series.id"))
     recurrence_key: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
