@@ -2,7 +2,7 @@
 
 ## 2026-09-09 — Safe command boundaries
 
-- **Decision:** `./scripts/test.sh` is the complete default gate. It runs the non-PostgreSQL backend checks, invokes the mandatory PostgreSQL/service gate, then runs frontend tests and the production build. The marker split prevents destructive fixtures from running against the development database; it does not omit them from the overall command.
+- **Decision:** `./scripts/test.sh` is the complete default gate. It builds backend and frontend images first, runs the non-PostgreSQL backend checks, invokes the mandatory PostgreSQL/service gate, then runs frontend tests and the production build. Building first is required because `docker compose run` otherwise can execute a stale local image. The marker split prevents destructive fixtures from running against the development database; it does not omit them from the overall command.
 - **Decision:** `./scripts/test-postgres.sh` creates a unique Compose project with disposable PostgreSQL and Redis volumes plus an isolated Mailpit. It creates and migrates `notetaker_qa`, starts a dedicated Celery worker, runs marked integration tests, and removes the whole project through a trap.
 - **Safety:** destructive fixtures only activate when `TEST_DATABASE_URL` is explicitly supplied and its database name contains `test` or `qa`. The mandatory gate sets `FAIL_ON_SKIP=1`; any selected test which skips makes the session fail instead of producing a misleading green result.
 - **Alternative rejected:** silently setting `TEST_DATABASE_URL` to the development database or reusing the development Compose project. Either choice can destroy local rows, messages, or service state.
@@ -58,5 +58,6 @@
 - Audit failure retained: the first two isolated artifact attempts completed all 16 tests but failed copying query-plan evidence due to direct bind-file `PermissionError`. The final temporary-directory design passed; its pre-race run recorded 16 passed/17 deselected in 11.99 s and retained 15,272 bytes of JSON with execution times 0.096, 9.381, 1.786, and 0.356 ms respectively.
 - Final isolated service verification after the delete-race and fail-on-skip additions: 17 passed/17 deselected, zero skips, in 27.88 s. The full migration cycle and `alembic check` passed. The retained 15,275-byte JSON recorded calendar 0.087 ms, search 10.360 ms, tag filter 1.918 ms, and trash 0.280 ms.
 - Final isolated recovery verification passed PostgreSQL and Redis restart persistence plus PostgreSQL logical restore. Its trap removed the dedicated project and volumes.
+- Audit finding: the first complete default-gate run used a pre-existing backend image for its initial phase (18 passed/19 skipped), although its nested service gate rebuilt the image and passed 17 tests with zero skips. The command now builds both images before any tests; the final post-fix record follows in the last documentation commit.
 
 The dates in this log follow the repository integration date (2026-09-09). The measured values are evidence for this host and run, not latency promises.
