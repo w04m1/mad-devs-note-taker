@@ -2,6 +2,12 @@
 set -eu
 cd "$(dirname "$0")/.."
 
+if [ ! -f backend/app/jobs/celery_app.py ] || ! grep -q 'name = "celery"' backend/uv.lock; then
+  echo "full-stack gate blocked: backend Celery jobs and locked Celery dependency have not landed" >&2
+  echo "database migrations and application image checks can still run independently" >&2
+  exit 2
+fi
+
 cleanup_on_failure() {
   status=$?
   if [ "$status" -ne 0 ]; then

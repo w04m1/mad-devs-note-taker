@@ -7,8 +7,11 @@ A client-server note and reminder application. See [`PLAN.md`](PLAN.md) for the 
 Prerequisites: Docker Engine 27+, Docker Compose v2.24+, 4 GB free memory, and `curl`. Application dependency manifests are supplied by the backend and frontend implementation workstreams.
 
 ```sh
-docker compose up --build --wait
+# Current integrated database/API/frontend subset
+docker compose up --build --wait postgres migrate backend frontend
 ```
+
+The planned `worker` and `beat` services are defined, but full-stack startup is gated until the backend adds its Celery dependency and `app.jobs.celery_app`. `./scripts/smoke.sh` reports this gate instead of starting placeholder jobs.
 
 Open <http://localhost:5173>. Mailpit is at <http://localhost:8025>. Local defaults need no `.env`; copy [`.env.example`](.env.example) to override them.
 

@@ -1,9 +1,9 @@
 # syntax=docker/dockerfile:1.7
-FROM node:22.11.0-bookworm-slim
+FROM node:22.13.1-bookworm-slim
 
 ENV PNPM_HOME=/pnpm \
     PATH=/pnpm:$PATH
-RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
+RUN npm install --global pnpm@11.21.0
 WORKDIR /app
 
 # The frontend workstream owns package.json and pnpm-lock.yaml here. Copying the

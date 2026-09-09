@@ -3,7 +3,7 @@
 ## 2026-09-09T18:12:00Z — Compose topology and pinned runtimes
 
 - **Problem or decision:** Provide the requested process topology without hiding extra daemons in application containers.
-- **Chosen approach and reason:** Define exactly seven long-lived services (`postgres`, `redis`, `mailpit`, `backend`, `worker`, `beat`, `frontend`) and one one-shot `migrate`. Use exact version tags for PostgreSQL 16.4, Redis 7.4.1, Mailpit 1.21.7, Python 3.12.7, uv 0.5.11, Node 22.11.0, and pnpm 9.12.3 so upgrades are reviewed rather than floating through `latest`.
+- **Chosen approach and reason:** Define exactly seven long-lived services (`postgres`, `redis`, `mailpit`, `backend`, `worker`, `beat`, `frontend`) and one one-shot `migrate`. Use exact version tags for PostgreSQL 16.4, Redis 7.4.1, Mailpit 1.21.7, Python 3.12.7, uv 0.5.11, Node 22.13.1, and pnpm 11.21.0 so upgrades are reviewed rather than floating through `latest`.
 - **Alternative and tradeoff:** Combining worker and Beat or running migrations in every backend replica would use fewer containers, but creates duplicate schedulers and migration races. Immutable registry digests would resist tag replacement more strongly, but are architecture-specific and harder to maintain for this multi-platform local stack; exact release tags are the chosen pinning level.
 - **Evidence:** `docker compose config --quiet` succeeds and reports eight service definitions.
 - **Deviations or unresolved work:** Image builds require the backend/frontend locked manifests from parallel workstreams.

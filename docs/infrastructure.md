@@ -13,13 +13,13 @@ The application is an unauthenticated, single-profile local system. The default 
 
 Infrastructure can be merged before the parallel application branches, but images only build after those branches provide their locked manifests.
 
-- `backend/pyproject.toml` and `backend/uv.lock` exist. The importable ASGI application is `app.main:app`. Alembic uses `backend/alembic.ini`. The Celery instance is `app.jobs.celery_app:celery_app`.
+- `backend/pyproject.toml` and `backend/uv.lock` exist. The importable ASGI application is `app.main:app`. Alembic uses `backend/alembic.ini`. `DATABASE_URL` is the frozen async URL; backend configuration derives the same host/database with the `postgresql+psycopg` driver for Alembic and synchronous work. The planned Celery instance is `app.jobs.celery_app:celery_app`, but that module and the Celery dependency have not landed yet.
 - The backend exposes `GET /api/v1/health/live` and dependency-aware `GET /api/v1/health/ready`. Readiness may report Redis as degraded but must return 2xx while durable PostgreSQL writes remain safe.
 - `frontend/package.json` and `frontend/pnpm-lock.yaml` exist and have `dev` and `build` scripts. The Vite server listens on the command-line host/port.
 - `vite.config.ts` proxies both `/api` and `/ws` to `process.env.VITE_PROXY_TARGET` (`http://backend:8000` in Compose), with WebSocket proxying enabled for `/ws`. Browser code uses relative URLs and never sees Docker DNS names.
 - Backend and frontend manifests are owned by their workstreams. The Dockerfiles copy either project tree wholesale, so normal root-level `app/`, `migrations/`, `src/`, and generated-file additions need no Dockerfile edit.
 
-If an application workstream chooses different module or script names, update Compose and this contract in one focused integration commit.
+If an application workstream chooses different module or script names, update Compose and this contract in one focused integration commit. Until the Celery application and dependency land, `worker` and `beat` cannot start and the seven-service smoke gate is expected to fail. Do not replace them with placeholder jobs.
 
 ## Start and inspect
 
@@ -42,13 +42,13 @@ Startup is gated in this order:
 3. Backend, worker, and Beat cannot start if migration exits nonzero. Redis also gates processes that require it.
 4. Frontend starts only after backend readiness succeeds.
 
-`docker compose ps -a migrate` should show exit code 0. Exactly seven other services remain running.
+`docker compose ps -a migrate` should show exit code 0. Exactly seven other services remain running once the Celery implementation gate is complete. At the current integration point, validate PostgreSQL and the real migration separately as shown below.
 
 ## Routine commands
 
 ```sh
 ./scripts/compose-config.sh       # parse and normalize Compose
-./scripts/smoke.sh                # build, start, wait, and probe the full stack
+./scripts/smoke.sh                # full-stack gate; fails clearly until Celery jobs land
 ./scripts/test.sh                 # backend tests, optional frontend tests, frontend build
 docker compose run --rm migrate  # apply new migrations explicitly
 docker compose logs -f --tail=200 worker
