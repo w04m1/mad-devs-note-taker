@@ -3,7 +3,6 @@ import { card, compose, createNote, createSeries, editCard, mailpitMessages, not
 
 let contexts:BrowserContext[]=[];
 async function client(browser:Browser, timezoneId="UTC"):Promise<Page>{const context=await browser.newContext({timezoneId}); contexts.push(context); return context.newPage();}
-test.describe.configure({mode:"serial"});
 test.afterEach(async()=>{await Promise.all(contexts.splice(0).map(c=>c.close()));});
 test.beforeEach(async({request})=>resetData(request));
 
@@ -70,7 +69,7 @@ test("recurrence keeps earlier edits and cancellation when the future is split",
   page.once("dialog",d=>d.accept()); await secondCard.getByRole("button",{name:"Trash"}).click(); await poll(()=>notes(request,true),v=>v.some(n=>n.id===secondNow.id));
   await page.reload(); const baseCards=card(page,"Series base"); await expect(baseCards).toHaveCount(4);
   await baseCards.first().getByRole("button",{name:"Edit"}).click(); await page.getByRole("button",{name:"This and future occurrences"}).click(); const future=page.getByRole("form",{name:"Edit this and future occurrences"}); await future.getByLabel("Title").fill("Replacement future"); await future.getByRole("button",{name:"Save series"}).click();
-  const visible=await notes(request); expect(visible.find(n=>n.id===first.id)?.title).toBe("Earlier exception"); expect((await notes(request,true)).some(n=>n.id===second.id)).toBeTruthy(); expect(visible.filter(n=>n.title==="Replacement future").length).toBeGreaterThanOrEqual(1); expect(visible.filter(n=>n.title==="Series base").length).toBe(0);
+  const visible=await poll(()=>notes(request),v=>v.some(n=>n.title==="Replacement future")); expect(visible.find(n=>n.id===first.id)?.title).toBe("Earlier exception"); expect((await notes(request,true)).some(n=>n.id===second.id)).toBeTruthy(); expect(visible.filter(n=>n.title==="Replacement future").length).toBeGreaterThanOrEqual(1); expect(visible.filter(n=>n.title==="Series base").length).toBe(0);
 });
 
 test("trash and restore update both clients and reinstate only future reminder work",async({browser,request})=>{
