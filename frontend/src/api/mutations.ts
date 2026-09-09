@@ -21,7 +21,7 @@ export function useNoteMutations() {
 
 export function useTagMutations() {
   const client = useQueryClient();
-  const refresh = () => Promise.all([client.invalidateQueries({ queryKey: queryKeys.tags.all }), client.invalidateQueries({ queryKey: queryKeys.notes.all })]);
+  const refresh = () => Promise.all([client.invalidateQueries({ queryKey: queryKeys.tags.all }), client.invalidateQueries({ queryKey: queryKeys.notes.all }), client.invalidateQueries({ queryKey: queryKeys.calendar.all }), client.invalidateQueries({ queryKey: queryKeys.upcoming.all })]);
   return {
     create: useMutation({ mutationFn: (value: TagWrite) => api.tags.create(value), onSuccess: refresh }),
     update: useMutation({ mutationFn: ({ id, value }: { id: string; value: TagWrite & { expected_version: number } }) => api.tags.update(id, value), onSuccess: refresh }),

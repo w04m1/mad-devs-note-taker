@@ -46,7 +46,7 @@ This log covers `codex/frontend-features`. Entries are chronological. The shared
 
 ## 2026-04-09 — Centralize mutation invalidation
 
-**Decision.** `useNoteMutations`, `useTagMutations`, and `useSettingsMutation` own API calls and cache reconciliation. Note writes invalidate notes, calendar, upcoming, and trash. Tag writes invalidate tags and notes. Settings writes update settings and invalidate time-rendering views.
+**Decision.** `useNoteMutations`, `useTagMutations`, and `useSettingsMutation` own API calls and cache reconciliation. Note writes invalidate notes, calendar, upcoming, and trash. Tag writes invalidate tags plus notes, calendar, and upcoming because all can render tag metadata. Settings writes update settings and invalidate time-rendering views.
 
 **Why/evidence.** The same actions are used by list cards, forms, and Trash. One policy prevents screens from forgetting dependent caches. Mutations have no automatic retry.
 
