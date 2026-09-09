@@ -7,6 +7,7 @@ def test_frozen_environment_names_are_loaded(monkeypatch) -> None:
     monkeypatch.setenv("REMINDER_SCAN_INTERVAL_SECONDS", "7")
     monkeypatch.setenv("OUTBOX_POLL_INTERVAL_SECONDS", "4")
     monkeypatch.setenv("TRASH_CLEANUP_INTERVAL_SECONDS", "99")
+    monkeypatch.setenv("MAX_SERIES_OCCURRENCES", "123")
 
     settings = Settings(_env_file=None)
 
@@ -15,6 +16,7 @@ def test_frozen_environment_names_are_loaded(monkeypatch) -> None:
     assert settings.reminder_scan_interval_seconds == 7
     assert settings.outbox_poll_interval_seconds == 4
     assert settings.trash_cleanup_interval_seconds == 99
+    assert settings.max_series_occurrences == 123
 
 
 def test_sync_database_url_keeps_endpoint_and_uses_psycopg(monkeypatch) -> None:

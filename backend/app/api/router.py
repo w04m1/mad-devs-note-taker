@@ -29,7 +29,7 @@ from app.api.schemas import (
     TagUpdate,
     UpcomingResponse,
 )
-from app.config import get_settings
+from app.config import Settings, get_settings
 from app.db.models import (
     Note,
     NoteTag,
@@ -64,6 +64,7 @@ from app.domain.recurrence import (
 
 router = APIRouter(prefix="/api/v1")
 SessionDep = Annotated[AsyncSession, Depends(get_async_session)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 _PROFILE_ID = uuid.UUID("00000000-0000-0000-0000-000000000001")
 _COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
 
@@ -216,6 +217,21 @@ async def delete_tag(
                 "The tag changed",
                 current=_tag_response(tag).model_dump(mode="json"),
             )
+        series_ids = list(
+            (
+                await session.execute(select(SeriesTag.series_id).where(SeriesTag.tag_id == tag.id))
+            ).scalars()
+        )
+        series_rows = list(
+            (
+                await session.execute(
+                    select(RecurrenceSeries)
+                    .where(RecurrenceSeries.id.in_(series_ids))
+                    .order_by(RecurrenceSeries.id)
+                    .with_for_update()
+                )
+            ).scalars()
+        )
         notes = list(
             (
                 await session.execute(
@@ -230,10 +246,15 @@ async def delete_tag(
         await session.execute(delete(NoteTag).where(NoteTag.tag_id == tag.id))
         await session.execute(delete(SeriesTag).where(SeriesTag.tag_id == tag.id))
         now = utcnow()
+        for series in series_rows:
+            series.updated_at = now
         for note in notes:
             note.updated_at = now
         event_id, version = tag.id, tag.version
         await session.delete(tag)
+        await session.flush()
+        for series in series_rows:
+            add_event(session, "series.updated", series.id, series.version, series_id=series.id)
         add_event(session, "tag.deleted", event_id, version)
     return Response(status_code=204)
 
@@ -629,9 +650,13 @@ async def _locked_series(
 
 
 @router.post("/series", response_model=SeriesResponse, status_code=status.HTTP_201_CREATED)
-async def create_series(payload: SeriesCreate, session: SessionDep) -> SeriesResponse:
+async def create_series(
+    payload: SeriesCreate, session: SessionDep, settings: SettingsDep
+) -> SeriesResponse:
     async with session.begin():
-        series = await create_series_rows(session, payload, utcnow())
+        series = await create_series_rows(
+            session, payload, utcnow(), limit=settings.max_series_occurrences
+        )
         await session.flush()
         add_event(session, "series.updated", series.id, series.version, series_id=series.id)
         await session.flush()
@@ -646,7 +671,7 @@ async def get_series(series_id: uuid.UUID, session: SessionDep) -> SeriesRespons
 
 @router.post("/series/{series_id}/split", response_model=SeriesResponse)
 async def split_series(
-    series_id: uuid.UUID, payload: SeriesSplit, session: SessionDep
+    series_id: uuid.UUID, payload: SeriesSplit, session: SessionDep, settings: SettingsDep
 ) -> SeriesResponse:
     async with session.begin():
         old = await _locked_series(session, series_id, payload.expected_version)
@@ -695,7 +720,11 @@ async def split_series(
             )
         try:
             generated = expand_occurrences(
-                payload.local_start, payload.timezone, payload.frequency, payload.end_date
+                payload.local_start,
+                payload.timezone,
+                payload.frequency,
+                payload.end_date,
+                limit=settings.max_series_occurrences,
             )
         except (ValueError, OverflowError) as exc:
             raise ApiError(
@@ -814,14 +843,15 @@ async def _portion_boundary(
             "nothing_to_restore" if restoring else "empty_series",
             "The series portion is empty",
         )
+    existence_conditions = [
+        Note.series_id == series.id,
+        Note.recurrence_key == boundary,
+        Note.superseded_at.is_(None),
+    ]
+    if restoring:
+        existence_conditions.append(Note.series_trashed_at.is_not(None))
     exists = (
-        await session.execute(
-            select(Note.id).where(
-                Note.series_id == series.id,
-                Note.recurrence_key == boundary,
-                Note.superseded_at.is_(None),
-            )
-        )
+        await session.execute(select(Note.id).where(*existence_conditions))
     ).scalar_one_or_none()
     if exists is None:
         raise ApiError(404, "occurrence_not_found", "Selected occurrence not found")

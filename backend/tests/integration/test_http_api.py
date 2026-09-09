@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import text
 
+from app.config import Settings, get_settings
 from app.db.session import async_engine
 from app.main import app
 
@@ -397,3 +398,272 @@ async def test_series_split_replaces_future_exceptions_and_portion_trash_restore
     )
     assert restored.status_code == 200, restored.text
     assert restored.json()["version"] == successor["version"] + 2
+
+
+def _series_payload(
+    first: datetime, *, title: str = "Contract series", tag_ids=None, reminders=None
+):
+    return {
+        "title": title,
+        "body": "",
+        "starts_at": first.isoformat(),
+        "active": True,
+        "tag_ids": tag_ids or [],
+        "reminder_offsets_minutes": reminders or [],
+        "local_start": first.replace(tzinfo=None).isoformat(),
+        "timezone": "UTC",
+        "frequency": "daily",
+        "end_date": (first.date() + timedelta(days=2)).isoformat(),
+    }
+
+
+async def test_configured_series_limit_applies_to_create_and_split(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=70)).replace(microsecond=0)
+    created = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    selected = sorted(
+        (n for n in notes if n["series_id"] == created["id"]), key=lambda n: n["recurrence_key"]
+    )[1]
+    app.dependency_overrides[get_settings] = lambda: Settings(
+        max_series_occurrences=2, _env_file=None
+    )
+    try:
+        rejected_create = await client.post(
+            "/api/v1/series", json=_series_payload(first + timedelta(days=10))
+        )
+        assert rejected_create.status_code == 422
+        split_payload = {
+            **_series_payload(first + timedelta(days=1), title="Limited replacement"),
+            "recurrence_key": selected["recurrence_key"],
+            "expected_version": created["version"],
+            "expected_occurrence_version": selected["version"],
+        }
+        rejected_split = await client.post(
+            f"/api/v1/series/{created['id']}/split", json=split_payload
+        )
+        assert rejected_split.status_code == 422
+        assert "exceeds 2" in rejected_split.text
+    finally:
+        app.dependency_overrides.pop(get_settings, None)
+    unchanged = (await client.get(f"/api/v1/series/{created['id']}")).json()
+    assert unchanged["version"] == created["version"]
+    assert unchanged["occurrence_count"] == 3
+
+
+async def test_split_replaces_future_series_trash_and_keeps_unchanged_cycles(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=80)).replace(microsecond=0)
+    series = (
+        await client.post("/api/v1/series", json=_series_payload(first, reminders=[10]))
+    ).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (n for n in notes if n["series_id"] == series["id"]), key=lambda n: n["recurrence_key"]
+    )
+    trashed = await client.post(
+        f"/api/v1/series/{series['id']}/trash",
+        json={"expected_version": series["version"], "recurrence_key": notes[1]["recurrence_key"]},
+    )
+    assert trashed.status_code == 204
+    split_payload = {
+        **_series_payload(first + timedelta(days=1), title="Replacement"),
+        "reminder_offsets_minutes": [10],
+        "recurrence_key": notes[1]["recurrence_key"],
+        "expected_version": series["version"] + 1,
+        "expected_occurrence_version": notes[1]["version"] + 1,
+    }
+    split = await client.post(f"/api/v1/series/{series['id']}/split", json=split_payload)
+    assert split.status_code == 200, split.text
+    successor = split.json()
+    visible = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    replacement = [n for n in visible if n["series_id"] == successor["id"]]
+    replacement_ids = {n["id"] for n in replacement}
+    assert {notes[1]["id"], notes[2]["id"]} <= replacement_ids
+    assert len(replacement_ids) == 3
+    async with async_engine.connect() as connection:
+        cycles = (
+            await connection.execute(
+                text("""
+            SELECT n.id::text, rr.current_cycle_number, rd.state::text
+            FROM notes n JOIN reminder_rules rr ON rr.note_id=n.id
+            JOIN reminder_deliveries rd ON rd.reminder_rule_id=rr.id
+              AND rd.cycle_number=rr.current_cycle_number
+            WHERE n.series_id=:series_id ORDER BY n.recurrence_key
+        """),
+                {"series_id": successor["id"]},
+            )
+        ).all()
+    assert [(cycle, state) for _, cycle, state in cycles] == [(1, "pending")] * 3
+
+
+async def test_series_restore_does_not_revive_overlapping_individual_cancellation(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=90)).replace(microsecond=0)
+    series = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (n for n in notes if n["series_id"] == series["id"]), key=lambda n: n["recurrence_key"]
+    )
+    assert (
+        await client.delete(
+            f"/api/v1/notes/{notes[1]['id']}",
+            params={
+                "expected_version": notes[1]["version"],
+                "expected_series_version": series["version"],
+            },
+        )
+    ).status_code == 204
+    assert (
+        await client.post(
+            f"/api/v1/series/{series['id']}/trash",
+            json={
+                "expected_version": series["version"] + 1,
+                "recurrence_key": notes[0]["recurrence_key"],
+            },
+        )
+    ).status_code == 204
+    restored = await client.post(
+        f"/api/v1/series/{series['id']}/restore",
+        json={
+            "expected_version": series["version"] + 2,
+            "recurrence_key": notes[0]["recurrence_key"],
+        },
+    )
+    assert restored.status_code == 200, restored.text
+    trash_ids = {
+        n["id"] for n in (await client.get("/api/v1/notes", params={"trash": True})).json()["items"]
+    }
+    assert trash_ids == {notes[1]["id"]}
+    invalid_boundary = await client.post(
+        f"/api/v1/series/{series['id']}/restore",
+        json={
+            "expected_version": series["version"] + 3,
+            "recurrence_key": notes[1]["recurrence_key"],
+        },
+    )
+    assert invalid_boundary.status_code == 404
+
+
+async def test_split_rejects_historical_effective_override(client: httpx.AsyncClient) -> None:
+    first = (datetime.now(UTC) + timedelta(days=100)).replace(microsecond=0)
+    series = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (n for n in notes if n["series_id"] == series["id"]), key=lambda n: n["recurrence_key"]
+    )
+    moved_payload = {
+        "title": notes[1]["title"],
+        "body": "",
+        "starts_at": (datetime.now(UTC) - timedelta(minutes=1)).isoformat(),
+        "active": True,
+        "tag_ids": [],
+        "reminder_offsets_minutes": [],
+        "expected_version": notes[1]["version"],
+        "expected_series_version": series["version"],
+    }
+    assert (
+        await client.patch(f"/api/v1/notes/{notes[1]['id']}", json=moved_payload)
+    ).status_code == 200
+    split_payload = {
+        **_series_payload(first, title="Unsafe"),
+        "recurrence_key": notes[0]["recurrence_key"],
+        "expected_version": series["version"] + 1,
+        "expected_occurrence_version": notes[0]["version"],
+    }
+    rejected = await client.post(f"/api/v1/series/{series['id']}/split", json=split_payload)
+    assert rejected.status_code == 409
+    assert rejected.json()["code"] == "historical_replacement"
+
+
+async def test_changed_split_supersedes_old_slots_and_cancels_their_reminders(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=110)).replace(microsecond=0)
+    series = (
+        await client.post("/api/v1/series", json=_series_payload(first, reminders=[10]))
+    ).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (n for n in notes if n["series_id"] == series["id"]), key=lambda n: n["recurrence_key"]
+    )
+    shifted = first + timedelta(days=1, hours=2)
+    payload = {
+        **_series_payload(shifted, title="Shifted"),
+        "reminder_offsets_minutes": [10],
+        "recurrence_key": notes[1]["recurrence_key"],
+        "expected_version": series["version"],
+        "expected_occurrence_version": notes[1]["version"],
+    }
+    split = await client.post(f"/api/v1/series/{series['id']}/split", json=payload)
+    assert split.status_code == 200, split.text
+    successor = split.json()
+    visible_ids = {
+        n["id"]
+        for n in (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    }
+    assert notes[1]["id"] not in visible_ids and notes[2]["id"] not in visible_ids
+    async with async_engine.connect() as connection:
+        old = (
+            await connection.execute(
+                text("""
+          SELECT n.superseded_at IS NOT NULL, rd.state::text FROM notes n
+          JOIN reminder_rules rr ON rr.note_id=n.id JOIN reminder_deliveries rd ON rd.reminder_rule_id=rr.id
+          WHERE n.id IN (:one,:two) ORDER BY n.recurrence_key
+        """),
+                {"one": notes[1]["id"], "two": notes[2]["id"]},
+            )
+        ).all()
+        fresh_count = (
+            await connection.execute(
+                text("SELECT count(*) FROM notes WHERE series_id=:id AND superseded_at IS NULL"),
+                {"id": successor["id"]},
+            )
+        ).scalar_one()
+    assert old == [(True, "cancelled"), (True, "cancelled")]
+    assert fresh_count == 3
+
+
+async def test_tag_deletion_versions_series_and_occurrences(client: httpx.AsyncClient) -> None:
+    tag = (
+        await client.post("/api/v1/tags", json={"name": "Series tag", "color": "#123456"})
+    ).json()
+    first = (datetime.now(UTC) + timedelta(days=120)).replace(microsecond=0)
+    series = (
+        await client.post("/api/v1/series", json=_series_payload(first, tag_ids=[tag["id"]]))
+    ).json()
+    assert (
+        await client.delete(
+            f"/api/v1/tags/{tag['id']}", params={"expected_version": tag["version"]}
+        )
+    ).status_code == 204
+    changed_series = (await client.get(f"/api/v1/series/{series['id']}")).json()
+    changed_notes = [
+        n
+        for n in (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+        if n["series_id"] == series["id"]
+    ]
+    assert changed_series["version"] == series["version"] + 1
+    assert changed_series["tag_ids"] == []
+    assert {n["version"] for n in changed_notes} == {2}
+    assert all(n["tags"] == [] for n in changed_notes)
+
+
+async def test_manual_note_api_requires_an_offset_qualified_instant(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/v1/notes",
+        json={
+            "title": "Naive wall time",
+            "starts_at": "2026-10-25T02:30:00",
+            "active": True,
+            "tag_ids": [],
+            "reminder_offsets_minutes": [],
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["code"] == "validation_error"

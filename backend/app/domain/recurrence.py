@@ -189,11 +189,13 @@ async def materialize_note(
     return note
 
 
-async def create_series_rows(session: AsyncSession, payload, now: datetime) -> RecurrenceSeries:
+async def create_series_rows(
+    session: AsyncSession, payload, now: datetime, *, limit: int = MAX_OCCURRENCES
+) -> RecurrenceSeries:
     await validate_tags(session, payload.tag_ids)
     try:
         occurrences = expand_occurrences(
-            payload.local_start, payload.timezone, payload.frequency, payload.end_date
+            payload.local_start, payload.timezone, payload.frequency, payload.end_date, limit=limit
         )
     except (ValueError, OverflowError) as exc:
         field = "end_date" if "end_date" in str(exc) or "exceeds" in str(exc) else "timezone"
