@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import ApiError
@@ -416,6 +416,7 @@ def _notes_filter(
 ):
     conditions = [
         Note.superseded_at.is_(None),
+        Note.purged_at.is_(None),
         (Note.deleted_at.is_not(None) & Note.purged_at.is_(None))
         if trash
         else Note.deleted_at.is_(None),
@@ -532,6 +533,7 @@ async def calendar(
                 .where(
                     Note.deleted_at.is_(None),
                     Note.superseded_at.is_(None),
+                    Note.purged_at.is_(None),
                     Note.starts_at >= starts_from,
                     Note.starts_at < starts_to,
                 )
@@ -586,7 +588,12 @@ async def upcoming(
         ZoneInfo(profile.timezone),
     )
     tomorrow, week_end = tomorrow_local.astimezone(UTC), week_end_local.astimezone(UTC)
-    base = [Note.deleted_at.is_(None), Note.superseded_at.is_(None), Note.active.is_(True)]
+    base = [
+        Note.deleted_at.is_(None),
+        Note.superseded_at.is_(None),
+        Note.purged_at.is_(None),
+        Note.active.is_(True),
+    ]
     today = await _note_group(
         session, base + [Note.starts_at >= now, Note.starts_at < tomorrow], page, page_size
     )
@@ -682,6 +689,7 @@ async def split_series(
                     Note.series_id == old.id,
                     Note.recurrence_key == payload.recurrence_key,
                     Note.superseded_at.is_(None),
+                    Note.purged_at.is_(None),
                 )
                 .with_for_update()
             )
@@ -739,6 +747,48 @@ async def split_series(
                 "starts_at conflicts with local_start",
                 field_errors={"starts_at": "must equal the first valid recurrence instant"},
             )
+        historical_instants = [
+            occurrence.instant for occurrence in generated if occurrence.instant <= now
+        ]
+        if historical_instants:
+            raise ApiError(
+                409,
+                "historical_replacement",
+                "A future-series change cannot create an occurrence that has already started",
+                current={
+                    "recurrence_keys": [instant.isoformat() for instant in historical_instants]
+                },
+            )
+        generated_keys = {occurrence.instant for occurrence in generated}
+        colliding_notes = list(
+            (
+                await session.execute(
+                    select(Note.id, Note.recurrence_key, Note.starts_at)
+                    .join(RecurrenceSeries, RecurrenceSeries.id == Note.series_id)
+                    .where(
+                        RecurrenceSeries.lineage_id == old.lineage_id,
+                        Note.recurrence_key < selected.recurrence_key,
+                        or_(
+                            Note.recurrence_key.in_(generated_keys),
+                            Note.starts_at.in_(generated_keys),
+                        ),
+                        Note.superseded_at.is_(None),
+                    )
+                    .order_by(Note.recurrence_key, Note.id)
+                )
+            ).all()
+        )
+        if colliding_notes:
+            raise ApiError(
+                409,
+                "recurrence_collision",
+                "The replacement schedule collides with an earlier occurrence",
+                current={
+                    "note_ids": [str(note_id) for note_id, _, _ in colliding_notes],
+                    "recurrence_keys": [key.isoformat() for _, key, _ in colliding_notes],
+                    "starts_at": [instant.isoformat() for _, _, instant in colliding_notes],
+                },
+            )
         await validate_tags(session, payload.tag_ids)
         title = payload.title.strip()
         if not title:
@@ -767,7 +817,9 @@ async def split_series(
         old.end_date = boundary_local.date() - timedelta(days=1)
         old.split_boundary = selected.recurrence_key
         old.updated_at = now
-        by_key = {note.recurrence_key: note for note in affected}
+        # Purged rows are permanent technical tombstones. Never revive one as the
+        # successor occurrence; create a new row and supersede the tombstone below.
+        by_key = {note.recurrence_key: note for note in affected if note.purged_at is None}
         kept: set[uuid.UUID] = set()
         for occurrence in generated:
             note = by_key.get(occurrence.instant)
@@ -811,12 +863,18 @@ async def split_series(
                 note.updated_at = now
                 offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
                 await reconcile_reminders(session, note, offsets, schedule_changed=False, now=now)
-        await session.execute(
-            delete(OccurrenceException).where(
-                OccurrenceException.series_id == old.id,
-                OccurrenceException.recurrence_key >= selected.recurrence_key,
-            )
+        purged_keys = {note.recurrence_key for note in affected if note.purged_at is not None}
+        exception_delete = delete(OccurrenceException).where(
+            OccurrenceException.series_id == old.id,
+            OccurrenceException.recurrence_key >= selected.recurrence_key,
         )
+        if purged_keys:
+            # Keep the minimal cancellation marker that makes a purged recurring
+            # deletion auditable. Other future overrides belong to the old portion.
+            exception_delete = exception_delete.where(
+                OccurrenceException.recurrence_key.not_in(purged_keys)
+            )
+        await session.execute(exception_delete)
         await session.flush()
         add_event(
             session, "series.updated", successor.id, successor.version, series_id=successor.id

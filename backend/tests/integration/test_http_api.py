@@ -8,7 +8,8 @@ import pytest
 from sqlalchemy import text
 
 from app.config import Settings, get_settings
-from app.db.session import async_engine
+from app.db.session import async_engine, sync_session_factory
+from app.jobs.maintenance import purge_trash
 from app.main import app
 
 pytestmark = [
@@ -628,6 +629,260 @@ async def test_changed_split_supersedes_old_slots_and_cancels_their_reminders(
         ).scalar_one()
     assert old == [(True, "cancelled"), (True, "cancelled")]
     assert fresh_count == 3
+
+
+async def test_split_rejects_preserved_key_collision_and_generated_historical_instants(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=180)).replace(microsecond=0)
+    series = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (note for note in notes if note["series_id"] == series["id"]),
+        key=lambda note: note["recurrence_key"],
+    )
+
+    collision_payload = {
+        **_series_payload(first, title="Collision"),
+        "recurrence_key": notes[1]["recurrence_key"],
+        "expected_version": series["version"],
+        "expected_occurrence_version": notes[1]["version"],
+    }
+    collision = await client.post(f"/api/v1/series/{series['id']}/split", json=collision_payload)
+    assert collision.status_code == 409, collision.text
+    assert collision.json()["code"] == "recurrence_collision"
+    assert datetime.fromisoformat(collision.json()["current"]["recurrence_keys"][0]) == first
+
+    effective_collision = first + timedelta(days=1, hours=2)
+    moved = await client.patch(
+        f"/api/v1/notes/{notes[0]['id']}",
+        json={
+            "title": notes[0]["title"],
+            "body": notes[0]["body"],
+            "starts_at": effective_collision.isoformat(),
+            "active": notes[0]["active"],
+            "tag_ids": [],
+            "reminder_offsets_minutes": [],
+            "expected_version": notes[0]["version"],
+            "expected_series_version": series["version"],
+        },
+    )
+    assert moved.status_code == 200, moved.text
+    effective_payload = {
+        **_series_payload(effective_collision, title="Effective collision"),
+        "recurrence_key": notes[1]["recurrence_key"],
+        "expected_version": series["version"] + 1,
+        "expected_occurrence_version": notes[1]["version"],
+    }
+    effective = await client.post(f"/api/v1/series/{series['id']}/split", json=effective_payload)
+    assert effective.status_code == 409, effective.text
+    assert effective.json()["code"] == "recurrence_collision"
+    assert effective.json()["current"]["note_ids"] == [notes[0]["id"]]
+    assert effective.json()["current"]["starts_at"] == [effective_collision.isoformat()]
+
+    past = (datetime.now(UTC) - timedelta(days=2)).replace(microsecond=0)
+    historical_payload = {
+        **_series_payload(past, title="Historical"),
+        "recurrence_key": notes[1]["recurrence_key"],
+        "expected_version": series["version"] + 1,
+        "expected_occurrence_version": notes[1]["version"],
+    }
+    historical = await client.post(f"/api/v1/series/{series['id']}/split", json=historical_payload)
+    assert historical.status_code == 409, historical.text
+    assert historical.json()["code"] == "historical_replacement"
+
+    async with async_engine.connect() as connection:
+        series_rows = (
+            await connection.execute(
+                text(
+                    "SELECT count(*), max(split_boundary) FROM recurrence_series "
+                    "WHERE lineage_id=:lineage_id"
+                ),
+                {"lineage_id": series["lineage_id"]},
+            )
+        ).one()
+        note_count = (
+            await connection.execute(
+                text("SELECT count(*) FROM notes WHERE series_id=:series_id"),
+                {"series_id": series["id"]},
+            )
+        ).scalar_one()
+    assert series_rows == (1, None)
+    assert note_count == 3
+    unchanged = (await client.get(f"/api/v1/series/{series['id']}")).json()
+    assert unchanged["version"] == series["version"] + 1
+
+
+async def test_second_split_checks_preserved_predecessor_segments(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=190)).replace(microsecond=0)
+    original = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (note for note in notes if note["series_id"] == original["id"]),
+        key=lambda note: note["recurrence_key"],
+    )
+    first_split_payload = {
+        **_series_payload(first + timedelta(days=1), title="Middle segment"),
+        "end_date": (first.date() + timedelta(days=2)).isoformat(),
+        "recurrence_key": notes[1]["recurrence_key"],
+        "expected_version": original["version"],
+        "expected_occurrence_version": notes[1]["version"],
+    }
+    first_split = await client.post(
+        f"/api/v1/series/{original['id']}/split", json=first_split_payload
+    )
+    assert first_split.status_code == 200, first_split.text
+    successor = first_split.json()
+    current = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    current = sorted(
+        (note for note in current if note["series_id"] == successor["id"]),
+        key=lambda note: note["recurrence_key"],
+    )
+
+    collision_payload = {
+        **_series_payload(first, title="Must not overlap predecessor"),
+        "end_date": first.date().isoformat(),
+        "recurrence_key": current[1]["recurrence_key"],
+        "expected_version": successor["version"],
+        "expected_occurrence_version": current[1]["version"],
+    }
+    collision = await client.post(f"/api/v1/series/{successor['id']}/split", json=collision_payload)
+    assert collision.status_code == 409, collision.text
+    assert collision.json()["code"] == "recurrence_collision"
+    assert collision.json()["current"]["note_ids"] == [notes[0]["id"]]
+    async with async_engine.connect() as connection:
+        lineage_count = (
+            await connection.execute(
+                text("SELECT count(*) FROM recurrence_series WHERE lineage_id=:lineage_id"),
+                {"lineage_id": original["lineage_id"]},
+            )
+        ).scalar_one()
+    assert lineage_count == 2
+    unchanged = (await client.get(f"/api/v1/series/{successor['id']}")).json()
+    assert unchanged["split_boundary"] is None
+    assert unchanged["version"] == successor["version"]
+
+
+async def test_split_preserves_purged_tombstone_and_materializes_accessible_replacement(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=200)).replace(microsecond=0)
+    series = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    notes = sorted(
+        (note for note in notes if note["series_id"] == series["id"]),
+        key=lambda note: note["recurrence_key"],
+    )
+    tombstone = notes[1]
+    deleted = await client.delete(
+        f"/api/v1/notes/{tombstone['id']}",
+        params={
+            "expected_version": tombstone["version"],
+            "expected_series_version": series["version"],
+        },
+    )
+    assert deleted.status_code == 204, deleted.text
+    purge_now = datetime.now(UTC).replace(microsecond=0)
+    async with async_engine.begin() as connection:
+        await connection.execute(
+            text("UPDATE notes SET deleted_at=:deleted_at WHERE id=:note_id"),
+            {"deleted_at": purge_now - timedelta(days=31), "note_id": tombstone["id"]},
+        )
+    with sync_session_factory() as session, session.begin():
+        assert purge_trash(session, now=purge_now) == 1
+
+    split_payload = {
+        **_series_payload(first, title="Replacement"),
+        "recurrence_key": notes[0]["recurrence_key"],
+        "expected_version": series["version"] + 1,
+        "expected_occurrence_version": notes[0]["version"],
+    }
+    split = await client.post(f"/api/v1/series/{series['id']}/split", json=split_payload)
+    assert split.status_code == 200, split.text
+    successor = split.json()
+
+    listed = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    replacement = next(
+        note for note in listed if note["recurrence_key"] == tombstone["recurrence_key"]
+    )
+    assert replacement["id"] != tombstone["id"]
+    assert replacement["series_id"] == successor["id"]
+    assert tombstone["id"] not in {note["id"] for note in listed}
+    trash = (await client.get("/api/v1/notes", params={"trash": True})).json()["items"]
+    assert tombstone["id"] not in {note["id"] for note in trash}
+
+    calendar = await client.get(
+        "/api/v1/calendar",
+        params={
+            "starts_from": (first - timedelta(days=1)).isoformat(),
+            "starts_to": (first + timedelta(days=4)).isoformat(),
+        },
+    )
+    assert calendar.status_code == 200, calendar.text
+    calendar_ids = {note["id"] for note in calendar.json()}
+    assert replacement["id"] in calendar_ids
+    assert tombstone["id"] not in calendar_ids
+    assert (await client.get(f"/api/v1/notes/{tombstone['id']}")).status_code == 404
+    invalid_edit = await client.patch(
+        f"/api/v1/notes/{tombstone['id']}",
+        json={
+            "title": "Must stay gone",
+            "body": "",
+            "starts_at": tombstone["starts_at"],
+            "active": True,
+            "tag_ids": [],
+            "reminder_offsets_minutes": [],
+            "expected_version": tombstone["version"],
+            "expected_series_version": successor["version"],
+        },
+    )
+    assert invalid_edit.status_code == 404
+
+    detail = await client.get(f"/api/v1/notes/{replacement['id']}")
+    assert detail.status_code == 200
+    editable = detail.json()
+    edited = await client.patch(
+        f"/api/v1/notes/{replacement['id']}",
+        json={
+            "title": "Editable replacement",
+            "body": editable["body"],
+            "starts_at": editable["starts_at"],
+            "active": editable["active"],
+            "tag_ids": [],
+            "reminder_offsets_minutes": [],
+            "expected_version": editable["version"],
+            "expected_series_version": successor["version"],
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["title"] == "Editable replacement"
+
+    async with async_engine.connect() as connection:
+        stored = (
+            await connection.execute(
+                text(
+                    "SELECT purged_at IS NOT NULL, superseded_at IS NOT NULL, title, series_id::text "
+                    "FROM notes WHERE id=:note_id"
+                ),
+                {"note_id": tombstone["id"]},
+            )
+        ).one()
+        marker = (
+            await connection.execute(
+                text(
+                    "SELECT cancelled, overridden_fields FROM occurrence_exceptions "
+                    "WHERE series_id=:series_id AND recurrence_key=:recurrence_key"
+                ),
+                {
+                    "series_id": series["id"],
+                    "recurrence_key": datetime.fromisoformat(tombstone["recurrence_key"]),
+                },
+            )
+        ).one()
+    assert stored == (True, True, "[purged]", series["id"])
+    assert marker == (True, {})
 
 
 async def test_tag_deletion_versions_series_and_occurrences(client: httpx.AsyncClient) -> None:

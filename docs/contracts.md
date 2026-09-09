@@ -37,7 +37,7 @@ Create and update accept title, body, offset-qualified `starts_at`, active state
 
 ## Recurrence
 
-Series creation includes template note fields, `local_start`, IANA `timezone`, `frequency` (`daily`, `weekly`, `monthly`), and inclusive `end_date`. Interval is one and expansion is capped at 10,000 concrete rows. Every occurrence has a stable original `recurrence_key`. Invalid monthly dates and nonexistent DST local times are skipped; an ambiguous time selects the earlier instant. Future splits identify the selected original recurrence key and replace future overrides/cancellations, while preserving earlier rows and history.
+Series creation includes template note fields, `local_start`, IANA `timezone`, `frequency` (`daily`, `weekly`, `monthly`), and inclusive `end_date`. Interval is one and expansion is capped at 10,000 concrete rows. Every occurrence has a stable original `recurrence_key`. Invalid monthly dates and nonexistent DST local times are skipped; an ambiguous time selects the earlier instant. Future splits identify the selected original recurrence key and replace future overrides/cancellations, while preserving earlier rows and history. Before any successor rows are written, every generated instant must still be in the future and must not equal the original recurrence key or effective `starts_at` of a preserved predecessor occurrence; conflicts return `409 historical_replacement` or `409 recurrence_collision`. A permanently purged occurrence remains an inaccessible, redacted predecessor tombstone during a split. Its minimal cancelled exception marker is retained for audit, while a new successor note identity is materialized for the replacement schedule.
 
 ### Manual datetime implementation note
 
