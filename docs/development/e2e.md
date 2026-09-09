@@ -25,8 +25,10 @@
 
 ### Evidence and current execution limit
 
-- `corepack pnpm install --frozen-lockfile` succeeds.
-- `corepack pnpm run typecheck` succeeds for the E2E project.
-- An initial `./tests/e2e/run.sh --grep concurrent` run exposed duplicate initial-migration index metadata before Playwright. The already-reviewed integration fix `136a08a` was then cherry-picked as `953b385`; this is historical harness evidence, not an open expected failure. A clean `docker compose -p notetaker-e2e up --build --wait postgres migrate` then exited 0, and the test volume was removed.
-- Full browser execution is waiting for the assigned contract-hardening integration: `/api/v1/tags` currently returns an array while the frontend reads `data.items`; Upcoming also differs (`today/week/past` are paged backend groups while the frontend expects arrays and `this_week`). No competing product-code workaround was committed here.
-- After that focused integration fix lands, rerun the fresh migration and all scenarios. Any remaining selector or timing failures must be reported from actual artifacts rather than claimed as passing.
+- The focused frontend contract fix is present as `08405a3`: tags consume the backend array and Upcoming consumes paged `today`, `week`, and `past` groups.
+- Audit command: `E2E_COMPOSE_PROJECT=notetaker-e2e-audit FRONTEND_PORT=25173 MAILPIT_UI_PORT=28025 E2E_BASE_URL=http://127.0.0.1:25173 E2E_MAILPIT_PORT=28025 ./tests/e2e/run.sh`.
+- The audit used a new Compose project and fresh named PostgreSQL and Redis volumes. Migration exited 0. Compose reported every long-lived service healthy. The wrapper removed the containers, network, and volumes after the run.
+- Dependency install with the frozen lockfile and `tsc --noEmit` both exited 0.
+- Chromium result: **6 passed (40.7s)**. Scenario durations were realtime/Upcoming 11.2s, notification 12.4s, calendar 2.9s, concurrent editing 5.6s, recurrence 3.4s, and trash/restore 4.2s.
+- No harness or selector defect appeared in the clean audit, so no test behavior was loosened. Broader contract-hardening changes were not pulled into this branch because they are outside the E2E harness scope and were not needed for these six scenarios.
+- Limits: the suite remains Chromium-only, serial, and destructive within its selected Compose project. The duplicate-toast observation is intentionally bounded to 600 ms. The test proves one scheduled delivery during its polling window, not behavior under prolonged retries or broker outages.
