@@ -21,10 +21,13 @@ from app.jobs.maintenance import purge_trash
 from app.jobs.outbox import publish_batch
 from app.jobs.reminders import authorize_delivery, claim_due, classify_unknown, deliver
 
-pytestmark = pytest.mark.skipif(
-    "TEST_DATABASE_URL" not in os.environ,
-    reason="set TEST_DATABASE_URL to a migrated PostgreSQL database",
-)
+pytestmark = [
+    pytest.mark.postgres,
+    pytest.mark.skipif(
+        "TEST_DATABASE_URL" not in os.environ,
+        reason="set TEST_DATABASE_URL to a migrated PostgreSQL database",
+    ),
+]
 
 
 @pytest.fixture(autouse=True)

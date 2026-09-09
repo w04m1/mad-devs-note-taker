@@ -11,10 +11,13 @@ from app.config import Settings, get_settings
 from app.db.session import async_engine
 from app.main import app
 
-pytestmark = pytest.mark.skipif(
-    "TEST_DATABASE_URL" not in os.environ,
-    reason="set TEST_DATABASE_URL to a migrated PostgreSQL database",
-)
+pytestmark = [
+    pytest.mark.postgres,
+    pytest.mark.skipif(
+        "TEST_DATABASE_URL" not in os.environ,
+        reason="set TEST_DATABASE_URL to a migrated PostgreSQL database",
+    ),
+]
 
 
 @pytest.fixture(autouse=True)

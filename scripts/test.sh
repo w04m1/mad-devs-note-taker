@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 # locked images as local development.
 docker compose up -d --wait postgres redis mailpit
 docker compose run --rm migrate
-docker compose run --rm backend uv run --frozen pytest "$@"
+docker compose run --rm backend uv run --frozen pytest -m "not postgres and not runtime and not celery" "$@"
+./scripts/test-postgres.sh "$@"
 docker compose run --rm frontend pnpm run --if-present test
 docker compose run --rm frontend pnpm build

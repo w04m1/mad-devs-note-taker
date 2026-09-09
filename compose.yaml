@@ -4,7 +4,7 @@ x-backend: &backend
   build:
     context: ./backend
     dockerfile: Dockerfile
-  image: mad-devs-note-taker-backend:local
+  image: ${BACKEND_IMAGE:-mad-devs-note-taker-backend:local}
   env_file:
     - path: .env
       required: false
