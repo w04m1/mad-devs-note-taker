@@ -10,14 +10,21 @@ import { Field, Input } from "../../components/ui/input";
 type Draft = { title: string; body: string; starts_at: string; active: boolean; tag_ids: string[]; reminder_offsets_minutes: ReminderOffset[] };
 const localDate = (iso: string, timezone: string) => DateTime.fromISO(iso,{setZone:true}).setZone(timezone).toFormat("yyyy-LL-dd\'T\'HH:mm");
 const initial = (timezone:string,note?: Note): Draft => note ? { title:note.title, body:note.body, starts_at:localDate(note.starts_at,timezone), active:note.active, tag_ids:note.tags.map(t=>t.id), reminder_offsets_minutes:note.reminder_offsets_minutes } : { title:"", body:"", starts_at:localDate(new Date(Date.now()+3600000).toISOString(),timezone), active:true, tag_ids:[], reminder_offsets_minutes:[] };
-function payload(draft: Draft, timezone: string): NoteWrite { const instant=DateTime.fromISO(draft.starts_at,{zone:timezone}); return {...draft, starts_at:instant.isValid?(instant.toISO()??draft.starts_at):draft.starts_at}; }
+export function manualNoteInstant(value: string, timezone: string): string | null {
+  const local=DateTime.fromISO(value,{zone:timezone});
+  if(!local.isValid||local.toFormat("yyyy-LL-dd'T'HH:mm")!==value)return null;
+  const candidates=local.getPossibleOffsets();
+  const earliest=candidates.reduce((first,candidate)=>candidate.toMillis()<first.toMillis()?candidate:first,local);
+  return earliest.toISO();
+}
+function payload(draft: Draft, startsAt: string): NoteWrite { return {...draft, starts_at:startsAt}; }
 export function NoteForm({ note, tags, timezone, onSaved, onCancel }: { note?: Note; tags: Tag[]; timezone: string; onSaved: () => void; onCancel: () => void }) {
   // Deliberately initialize once. Query invalidation/realtime rerenders must not overwrite a dirty draft.
   const [draft,setDraft]=useState<Draft>(()=>initial(timezone,note));
   const [errors,setErrors]=useState<Record<string,string>>({});
   const mutations=useNoteMutations(); const mutation=note?mutations.update:mutations.create;
   const [conflict,setConflict]=useState<unknown>(null);
-  const submit=async(e:FormEvent)=>{e.preventDefault();setErrors({});setConflict(null);const parsed=noteFormSchema.safeParse(payload(draft,timezone));if(!parsed.success){setErrors(Object.fromEntries(parsed.error.issues.map(i=>[String(i.path[0]),i.message])));return;}try{if(note){const expected_series_version=note.series_id?(await api.series.get(note.series_id)).version:undefined;await mutations.update.mutateAsync({id:note.id,value:{...parsed.data,expected_version:note.version,...(expected_series_version===undefined?{}:{expected_series_version})}});}else await mutations.create.mutateAsync(parsed.data);onSaved();}catch(error){if(error instanceof ApiError&&error.status===409)setConflict(error.body.current);else setErrors({form:error instanceof Error?error.message:"Save failed"});}};
+  const submit=async(e:FormEvent)=>{e.preventDefault();setErrors({});setConflict(null);const startsAt=manualNoteInstant(draft.starts_at,timezone);if(startsAt===null){setErrors({starts_at:"This local time does not exist in the selected timezone."});return;}const parsed=noteFormSchema.safeParse(payload(draft,startsAt));if(!parsed.success){setErrors(Object.fromEntries(parsed.error.issues.map(i=>[String(i.path[0]),i.message])));return;}try{if(note){const expected_series_version=note.series_id?(await api.series.get(note.series_id)).version:undefined;await mutations.update.mutateAsync({id:note.id,value:{...parsed.data,expected_version:note.version,...(expected_series_version===undefined?{}:{expected_series_version})}});}else await mutations.create.mutateAsync(parsed.data);onSaved();}catch(error){if(error instanceof ApiError&&error.status===409)setConflict(error.body.current);else setErrors({form:error instanceof Error?error.message:"Save failed"});}};
   const toggleTag=(id:string)=>setDraft(d=>({...d,tag_ids:d.tag_ids.includes(id)?d.tag_ids.filter(x=>x!==id):[...d.tag_ids,id]}));
   const toggleReminder=(value:ReminderOffset)=>setDraft(d=>({...d,reminder_offsets_minutes:d.reminder_offsets_minutes.includes(value)?d.reminder_offsets_minutes.filter(x=>x!==value):[...d.reminder_offsets_minutes,value]}));
   return <form className="grid gap-4 rounded-lg border bg-white p-5 shadow-sm" onSubmit={submit} aria-label={note?"Edit note":"Create note"}>
