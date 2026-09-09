@@ -39,3 +39,19 @@
 - **Alternative and tradeoff:** Publishing backend and putting an absolute API URL into the frontend is easy, but creates CORS and physical-device configuration drift. A reverse-proxy service would be production-like but would violate the exact seven-service topology.
 - **Evidence:** Compose exports the target only to frontend and the smoke probe reaches readiness through port 5173.
 - **Deviations or unresolved work:** The frontend workstream must implement the two Vite proxy entries.
+
+## 2026-09-09T18:12:50Z — Operator scripts and destructive boundaries
+
+- **Problem or decision:** Startup alone does not provide reproducible evidence or safe day-to-day operations.
+- **Chosen approach and reason:** Add scripts for Compose validation, full-stack smoke checks, locked backend/frontend tests, and confirmed logical backup/restore. Document that normal `down` preserves volumes and `down --volumes` destroys them. On smoke failure, retain containers and print logs for diagnosis.
+- **Alternative and tradeoff:** Automatically tear down after every smoke run gives cleaner hosts but erases the most useful failure state. Raw volume copying is fast but is unsafe without filesystem/database coordination; `pg_dump` is portable and online-safe.
+- **Evidence:** Shell syntax checks and Compose validation are part of this wave's checks; scripts use `set -eu` and fail-fast HTTP probes.
+- **Deviations or unresolved work:** Cross-service application and E2E tests await integrated feature code.
+
+## 2026-09-09T18:13:00Z — LAN override and security limit
+
+- **Problem or decision:** Two-device testing needs a non-loopback listener, while the product intentionally has no login.
+- **Chosen approach and reason:** Keep secure loopback defaults and document an explicit `0.0.0.0` frontend override plus exact allowed origin for a trusted LAN.
+- **Alternative and tradeoff:** Binding to all interfaces by default reduces setup for physical clients but risks unintended access. Adding TLS/auth belongs to a different product scope.
+- **Evidence:** `.env.example` defaults both published services to `127.0.0.1`; operations docs include the opt-in override and warning.
+- **Deviations or unresolved work:** No production exposure is supported.
