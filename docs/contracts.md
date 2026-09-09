@@ -39,6 +39,10 @@ Create and update accept title, body, offset-qualified `starts_at`, active state
 
 Series creation includes template note fields, `local_start`, IANA `timezone`, `frequency` (`daily`, `weekly`, `monthly`), and inclusive `end_date`. Interval is one and expansion is capped at 10,000 concrete rows. Every occurrence has a stable original `recurrence_key`. Invalid monthly dates and nonexistent DST local times are skipped; an ambiguous time selects the earlier instant. Future splits identify the selected original recurrence key and replace future overrides/cancellations, while preserving earlier rows and history.
 
+### Manual datetime implementation note
+
+Ordinary-note HTTP timestamps still require an explicit UTC offset. The current UI rejects nonexistent local wall times and deterministically selects the earlier instant for an ambiguous overlap. It does not yet present the two overlap choices required by the full PLAN behavior; API callers can select either by sending its explicit offset. This narrow deviation is tested and recorded in `docs/development/contract-hardening.md`.
+
 ## Reminder state machine
 
 Delivery states are `pending`, `claimed`, `attempt_started`, `sent`, `failed`, `unknown`, `missed`, and `cancelled`. The stable identity is `(reminder_rule_id, cycle_number)`. Schedule changes create a cycle; content, tags, active state, and display timezone do not. An unchanged schedule is idempotent. Claims use a token and lease. Eligibility is checked again before the `attempt_started` authorization commit. Default grace is 60 seconds.

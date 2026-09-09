@@ -32,7 +32,7 @@ This log covers the `codex/frontend-calendar` workstream. Each item records the 
 - **Decision:** Today, This week, and Past active are separate accessible sections; each note is a button that opens the same scope-aware editor. **Alternative:** duplicate edit UI or passive cards. **Evidence:** the requirements say notes must move groups and remain editable/openable.
 - **Decision:** refresh delay is computed from backend `server_now`, not the browser clock, choosing the earlier of `next_transition_at` and the next midnight in the saved timezone. **Alternative:** subtract `Date.now()`, which makes skewed clients transition early or late. **Evidence:** backend transition metadata is authoritative; tests cover clock skew and a DST boundary.
 - **Decision:** schedule a one-shot transition timer, a 60-second fallback interval, and immediate invalidation on window focus or return to visible state. The effect reschedules when either `server_now` or `next_transition_at` changes, and all listeners/timers are cleaned up. **Alternative:** interval only, or retaining a timer calculated from stale server metadata. **Evidence:** PLAN requires all four triggers and accounts for browser throttling; a fake-timer test covers transition, focus, fallback, and cleanup.
-- **Known contract gap:** the frozen handwritten `UpcomingResponse` contains unpaged arrays even though PLAN calls the groups paginated. This implementation follows the shared DTO and does not guess query/paging fields. Large `past` groups remain a backend-contract issue.
+- **Integrated contract:** `UpcomingResponse` uses paged `today`, `week`, and `past` groups. The v1 endpoint applies one shared `page` and `page_size` pair to all groups; see `contract-hardening.md`.
 
 ### Notes URL filters and search
 
