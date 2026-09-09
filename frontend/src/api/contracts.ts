@@ -14,10 +14,10 @@ export interface TagWrite { name: string; color: string }
 export interface SettingsUpdate { email: string; timezone: string; expected_version: number }
 export type Frequency = "daily" | "weekly" | "monthly";
 export interface SeriesCreate extends NoteWrite { local_start: string; timezone: string; frequency: Frequency; end_date: string }
-export interface ApiErrorBody { code: string; message: string; field_errors: Record<string,string[]> | null; current: unknown | null }
+export interface ApiErrorBody { code: string; message: string; field_errors: Record<string,string | string[]> | null; current: unknown | null }
 export type EventType = "note.created"|"note.updated"|"note.deleted"|"note.restored"|"series.updated"|"tag.created"|"tag.updated"|"tag.deleted"|"settings.updated"|"notification.created"|"resync_required";
 export interface RealtimeEvent { event_id: UUID; type: EventType; occurred_at: ISODateTime; entity_id: UUID | null; version: number | null; series_id: UUID | null }
-export interface Notification { id: UUID; note_id: UUID; title: string; scheduled_for: ISODateTime; created_at: ISODateTime }
+export interface Notification { id: UUID; reminder_delivery_id: UUID; title: string; body: string; scheduled_at: ISODateTime; created_at: ISODateTime }
 
 export interface RecurrenceSeries { id: UUID; lineage_id: UUID; predecessor_id: UUID | null; local_start: string; timezone: string; frequency: Frequency; end_date: string; version: number }
 export interface SeriesMutationVersion { expected_version: number }
