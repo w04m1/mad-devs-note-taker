@@ -27,6 +27,6 @@
 
 - `corepack pnpm install --frozen-lockfile` succeeds.
 - `corepack pnpm run typecheck` succeeds for the E2E project.
-- An initial `./tests/e2e/run.sh --grep concurrent` run exposed duplicate initial-migration index metadata before Playwright. The already-reviewed integration fix `136a08a` was then cherry-picked as `953b385`; this is historical harness evidence, not an open expected failure.
+- An initial `./tests/e2e/run.sh --grep concurrent` run exposed duplicate initial-migration index metadata before Playwright. The already-reviewed integration fix `136a08a` was then cherry-picked as `953b385`; this is historical harness evidence, not an open expected failure. A clean `docker compose -p notetaker-e2e up --build --wait postgres migrate` then exited 0, and the test volume was removed.
 - Full browser execution is waiting for the assigned contract-hardening integration: `/api/v1/tags` currently returns an array while the frontend reads `data.items`; Upcoming also differs (`today/week/past` are paged backend groups while the frontend expects arrays and `this_week`). No competing product-code workaround was committed here.
 - After that focused integration fix lands, rerun the fresh migration and all scenarios. Any remaining selector or timing failures must be reported from actual artifacts rather than claimed as passing.
