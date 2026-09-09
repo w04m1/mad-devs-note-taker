@@ -80,7 +80,7 @@ async def _settings(session: AsyncSession, *, lock: bool = False) -> UserSetting
     if row is None:
         config = get_settings()
         row = UserSettings(
-            id=_PROFILE_ID, email=config.default_email, timezone=config.default_timezone
+            id=_PROFILE_ID, email=config.app_default_email, timezone=config.app_default_timezone
         )
         session.add(row)
         await session.flush()
