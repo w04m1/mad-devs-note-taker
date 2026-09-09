@@ -112,6 +112,10 @@ class Note(Base, TimestampMixin, VersionMixin):
     starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Internal tombstone for future slots removed by a series split. It is not user trash.
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Identifies notes deleted by a reversible series-portion trash action.
+    series_trashed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     series_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("recurrence_series.id"))
     recurrence_key: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

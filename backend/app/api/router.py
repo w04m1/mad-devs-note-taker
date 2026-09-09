@@ -18,6 +18,10 @@ from app.api.schemas import (
     NotificationResponse,
     Page,
     RestoreRequest,
+    SeriesCreate,
+    SeriesPortionRequest,
+    SeriesResponse,
+    SeriesSplit,
     SettingsResponse,
     SettingsUpdate,
     TagCreate,
@@ -26,7 +30,18 @@ from app.api.schemas import (
     UpcomingResponse,
 )
 from app.config import get_settings
-from app.db.models import Note, NoteTag, Notification, Tag, UserSettings
+from app.db.models import (
+    Note,
+    NoteTag,
+    Notification,
+    OccurrenceException,
+    RecurrenceSeries,
+    ReminderRule,
+    SeriesReminderTemplate,
+    SeriesTag,
+    Tag,
+    UserSettings,
+)
 from app.db.session import get_async_session
 from app.domain.common import add_event, utcnow, validate_email, validate_timezone
 from app.domain.notes import (
@@ -37,6 +52,14 @@ from app.domain.notes import (
     reconcile_reminders,
     replace_tags,
     require_note,
+    validate_tags,
+)
+from app.domain.recurrence import (
+    create_series_rows,
+    expand_occurrences,
+    normalized_rrule,
+    series_response_data,
+    set_exception,
 )
 
 router = APIRouter(prefix="/api/v1")
@@ -205,6 +228,7 @@ async def delete_tag(
             ).scalars()
         )
         await session.execute(delete(NoteTag).where(NoteTag.tag_id == tag.id))
+        await session.execute(delete(SeriesTag).where(SeriesTag.tag_id == tag.id))
         now = utcnow()
         for note in notes:
             note.updated_at = now
@@ -285,6 +309,7 @@ async def update_note(note_id: uuid.UUID, payload: NoteUpdate, session: SessionD
             schedule_changed=schedule_changed,
             now=utcnow(),
         )
+        await set_exception(session, note)
         await session.flush()
         add_event(session, "note.updated", note.id, note.version, series_id=note.series_id)
         await session.flush()
@@ -306,13 +331,13 @@ async def delete_note(
             note.updated_at = utcnow()
             offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
             await reconcile_reminders(session, note, offsets, schedule_changed=False, now=utcnow())
+            await set_exception(session, note, cancelled=True)
             await session.flush()
             add_event(session, "note.deleted", note.id, note.version, series_id=note.series_id)
     return Response(status_code=204)
 
 
 def select_reminder_offsets(note_id: uuid.UUID):
-    from app.db.models import ReminderRule
 
     return select(ReminderRule.offset_minutes).where(
         ReminderRule.note_id == note_id, ReminderRule.enabled.is_(True)
@@ -341,6 +366,7 @@ async def restore_note(
         await reconcile_reminders(
             session, note, offsets, schedule_changed=False, now=utcnow(), future_only=True
         )
+        await set_exception(session, note, cancelled=False)
         await session.flush()
         add_event(session, "note.restored", note.id, note.version, series_id=note.series_id)
         await session.flush()
@@ -367,7 +393,10 @@ def _notes_filter(
     starts_to: datetime | None,
     trash: bool,
 ):
-    conditions = [Note.deleted_at.is_not(None) if trash else Note.deleted_at.is_(None)]
+    conditions = [
+        Note.superseded_at.is_(None),
+        Note.deleted_at.is_not(None) if trash else Note.deleted_at.is_(None),
+    ]
     if active is not None:
         conditions.append(Note.active.is_(active))
     if starts_from is not None:
@@ -479,6 +508,7 @@ async def calendar(
                 select(Note)
                 .where(
                     Note.deleted_at.is_(None),
+                    Note.superseded_at.is_(None),
                     Note.starts_at >= starts_from,
                     Note.starts_at < starts_to,
                 )
@@ -533,7 +563,7 @@ async def upcoming(
         ZoneInfo(profile.timezone),
     )
     tomorrow, week_end = tomorrow_local.astimezone(UTC), week_end_local.astimezone(UTC)
-    base = [Note.deleted_at.is_(None), Note.active.is_(True)]
+    base = [Note.deleted_at.is_(None), Note.superseded_at.is_(None), Note.active.is_(True)]
     today = await _note_group(
         session, base + [Note.starts_at >= now, Note.starts_at < tomorrow], page, page_size
     )
@@ -574,3 +604,307 @@ async def notifications(
         for row in rows
     ]
     return Page(items=items, total=total, page=page, page_size=page_size)
+
+
+async def _locked_series(
+    session: AsyncSession, series_id: uuid.UUID, expected: int | None = None
+) -> RecurrenceSeries:
+    row = (
+        await session.execute(
+            select(RecurrenceSeries).where(RecurrenceSeries.id == series_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise ApiError(404, "not_found", "Recurrence series not found")
+    if expected is not None and row.version != expected:
+        raise ApiError(
+            409,
+            "version_conflict",
+            "The recurrence series changed",
+            current={"id": str(row.id), "version": row.version},
+        )
+    return row
+
+
+@router.post("/series", response_model=SeriesResponse, status_code=status.HTTP_201_CREATED)
+async def create_series(payload: SeriesCreate, session: SessionDep) -> SeriesResponse:
+    async with session.begin():
+        series = await create_series_rows(session, payload, utcnow())
+        await session.flush()
+        add_event(session, "series.updated", series.id, series.version, series_id=series.id)
+        await session.flush()
+        return SeriesResponse.model_validate(await series_response_data(session, series))
+
+
+@router.get("/series/{series_id}", response_model=SeriesResponse)
+async def get_series(series_id: uuid.UUID, session: SessionDep) -> SeriesResponse:
+    series = await _locked_series(session, series_id)
+    return SeriesResponse.model_validate(await series_response_data(session, series))
+
+
+@router.post("/series/{series_id}/split", response_model=SeriesResponse)
+async def split_series(
+    series_id: uuid.UUID, payload: SeriesSplit, session: SessionDep
+) -> SeriesResponse:
+    async with session.begin():
+        old = await _locked_series(session, series_id, payload.expected_version)
+        selected = (
+            await session.execute(
+                select(Note)
+                .where(
+                    Note.series_id == old.id,
+                    Note.recurrence_key == payload.recurrence_key,
+                    Note.superseded_at.is_(None),
+                )
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if selected is None:
+            raise ApiError(404, "occurrence_not_found", "Selected occurrence not found")
+        if selected.version != payload.expected_occurrence_version:
+            raise ApiError(
+                409,
+                "version_conflict",
+                "The selected occurrence changed",
+                current={"id": str(selected.id), "version": selected.version},
+            )
+        affected = list(
+            (
+                await session.execute(
+                    select(Note)
+                    .where(
+                        Note.series_id == old.id,
+                        Note.recurrence_key >= selected.recurrence_key,
+                        Note.superseded_at.is_(None),
+                    )
+                    .order_by(Note.id)
+                    .with_for_update()
+                )
+            ).scalars()
+        )
+        now = utcnow()
+        historical = [note for note in affected if note.starts_at <= now]
+        if historical:
+            raise ApiError(
+                409,
+                "historical_replacement",
+                "A future-series change cannot rewrite an occurrence that has already started",
+                current={"note_ids": [str(x.id) for x in historical]},
+            )
+        try:
+            generated = expand_occurrences(
+                payload.local_start, payload.timezone, payload.frequency, payload.end_date
+            )
+        except (ValueError, OverflowError) as exc:
+            raise ApiError(
+                422, "invalid_recurrence", "Invalid recurrence", field_errors={"end_date": str(exc)}
+            ) from exc
+        if not generated:
+            raise ApiError(422, "invalid_recurrence", "Series has no valid occurrences")
+        if payload.starts_at.astimezone(UTC) != generated[0].instant:
+            raise ApiError(
+                422,
+                "invalid_recurrence",
+                "starts_at conflicts with local_start",
+                field_errors={"starts_at": "must equal the first valid recurrence instant"},
+            )
+        await validate_tags(session, payload.tag_ids)
+        title = payload.title.strip()
+        if not title:
+            raise ApiError(
+                422, "validation_error", "Invalid note", field_errors={"title": "must not be blank"}
+            )
+        successor = RecurrenceSeries(
+            lineage_id=old.lineage_id,
+            predecessor_id=old.id,
+            local_start=payload.local_start,
+            timezone=payload.timezone,
+            rrule=normalized_rrule(payload.frequency),
+            end_date=payload.end_date,
+            template_title=title,
+            template_body=payload.body,
+            template_active=payload.active,
+        )
+        session.add(successor)
+        await session.flush()
+        session.add_all(SeriesTag(series_id=successor.id, tag_id=x) for x in payload.tag_ids)
+        session.add_all(
+            SeriesReminderTemplate(series_id=successor.id, offset_minutes=x)
+            for x in payload.reminder_offsets_minutes
+        )
+        boundary_local = selected.recurrence_key.astimezone(ZoneInfo(old.timezone))
+        old.end_date = boundary_local.date() - timedelta(days=1)
+        old.split_boundary = selected.recurrence_key
+        old.updated_at = now
+        by_key = {note.recurrence_key: note for note in affected}
+        kept: set[uuid.UUID] = set()
+        for occurrence in generated:
+            note = by_key.get(occurrence.instant)
+            if note is None:
+                note = Note(
+                    title=title,
+                    body=payload.body,
+                    starts_at=occurrence.instant,
+                    active=payload.active,
+                    series_id=successor.id,
+                    recurrence_key=occurrence.instant,
+                )
+                session.add(note)
+                await session.flush()
+                schedule_changed = False
+            else:
+                kept.add(note.id)
+                schedule_changed = note.starts_at != occurrence.instant
+                note.series_id = successor.id
+                note.title, note.body, note.starts_at, note.active = (
+                    title,
+                    payload.body,
+                    occurrence.instant,
+                    payload.active,
+                )
+                note.deleted_at = note.series_trashed_at = note.superseded_at = None
+                note.updated_at = now
+                await session.execute(delete(NoteTag).where(NoteTag.note_id == note.id))
+            session.add_all(NoteTag(note_id=note.id, tag_id=x) for x in payload.tag_ids)
+            await reconcile_reminders(
+                session,
+                note,
+                payload.reminder_offsets_minutes,
+                schedule_changed=schedule_changed,
+                now=now,
+            )
+        for note in affected:
+            if note.id not in kept:
+                note.deleted_at = now
+                note.superseded_at = now
+                note.updated_at = now
+                offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
+                await reconcile_reminders(session, note, offsets, schedule_changed=False, now=now)
+        await session.execute(
+            delete(OccurrenceException).where(
+                OccurrenceException.series_id == old.id,
+                OccurrenceException.recurrence_key >= selected.recurrence_key,
+            )
+        )
+        await session.flush()
+        add_event(
+            session, "series.updated", successor.id, successor.version, series_id=successor.id
+        )
+        await session.flush()
+        return SeriesResponse.model_validate(await series_response_data(session, successor))
+
+
+async def _portion_boundary(
+    session: AsyncSession,
+    series: RecurrenceSeries,
+    requested: datetime | None,
+    *,
+    restoring: bool = False,
+) -> datetime:
+    conditions = [Note.series_id == series.id, Note.superseded_at.is_(None)]
+    if restoring:
+        conditions.append(Note.series_trashed_at.is_not(None))
+    stmt = select(func.min(Note.recurrence_key)).where(*conditions)
+    boundary = requested or (await session.execute(stmt)).scalar_one_or_none()
+    if boundary is None:
+        raise ApiError(
+            409,
+            "nothing_to_restore" if restoring else "empty_series",
+            "The series portion is empty",
+        )
+    exists = (
+        await session.execute(
+            select(Note.id).where(
+                Note.series_id == series.id,
+                Note.recurrence_key == boundary,
+                Note.superseded_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        raise ApiError(404, "occurrence_not_found", "Selected occurrence not found")
+    return boundary
+
+
+@router.post("/series/{series_id}/trash", status_code=status.HTTP_204_NO_CONTENT)
+async def trash_series_portion(
+    series_id: uuid.UUID, payload: SeriesPortionRequest, session: SessionDep
+) -> Response:
+    async with session.begin():
+        series = await _locked_series(session, series_id, payload.expected_version)
+        boundary = await _portion_boundary(session, series, payload.recurrence_key)
+        notes = list(
+            (
+                await session.execute(
+                    select(Note)
+                    .where(
+                        Note.series_id == series.id,
+                        Note.recurrence_key >= boundary,
+                        Note.superseded_at.is_(None),
+                    )
+                    .order_by(Note.id)
+                    .with_for_update()
+                )
+            ).scalars()
+        )
+        now = utcnow()
+        for note in notes:
+            if note.deleted_at is None:
+                note.deleted_at = note.series_trashed_at = now
+                note.updated_at = now
+                offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
+                await reconcile_reminders(session, note, offsets, schedule_changed=False, now=now)
+        series.updated_at = now
+        await session.flush()
+        add_event(session, "series.updated", series.id, series.version, series_id=series.id)
+    return Response(status_code=204)
+
+
+@router.post("/series/{series_id}/restore", response_model=SeriesResponse)
+async def restore_series_portion(
+    series_id: uuid.UUID, payload: SeriesPortionRequest, session: SessionDep
+) -> SeriesResponse:
+    async with session.begin():
+        series = await _locked_series(session, series_id, payload.expected_version)
+        boundary = await _portion_boundary(session, series, payload.recurrence_key, restoring=True)
+        notes = list(
+            (
+                await session.execute(
+                    select(Note)
+                    .where(
+                        Note.series_id == series.id,
+                        Note.recurrence_key >= boundary,
+                        Note.series_trashed_at.is_not(None),
+                        Note.superseded_at.is_(None),
+                    )
+                    .order_by(Note.id)
+                    .with_for_update()
+                )
+            ).scalars()
+        )
+        now = utcnow()
+        expired = [n for n in notes if n.series_trashed_at <= now - timedelta(days=30)]
+        if expired:
+            raise ApiError(410, "retention_expired", "The series portion can no longer be restored")
+        for note in notes:
+            exception = (
+                await session.execute(
+                    select(OccurrenceException).where(
+                        OccurrenceException.series_id == series.id,
+                        OccurrenceException.recurrence_key == note.recurrence_key,
+                    )
+                )
+            ).scalar_one_or_none()
+            note.series_trashed_at = None
+            if exception is None or not exception.cancelled:
+                note.deleted_at = None
+                note.updated_at = now
+                offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
+                await reconcile_reminders(
+                    session, note, offsets, schedule_changed=False, now=now, future_only=True
+                )
+        series.updated_at = now
+        await session.flush()
+        add_event(session, "series.updated", series.id, series.version, series_id=series.id)
+        await session.flush()
+        return SeriesResponse.model_validate(await series_response_data(session, series))

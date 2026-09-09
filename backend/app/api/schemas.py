@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _aware(value: datetime) -> datetime:
@@ -104,6 +104,76 @@ class Page(BaseModel):
     total: int
     page: int
     page_size: int
+
+
+RecurrenceFrequency = Literal["daily", "weekly", "monthly"]
+
+
+def _local(value: datetime) -> datetime:
+    if value.tzinfo is not None and value.utcoffset() is not None:
+        raise ValueError("datetime must be a local value without a UTC offset")
+    return value
+
+
+class SeriesFields(NoteFields):
+    local_start: datetime
+    timezone: Annotated[str, Field(min_length=1, max_length=64)]
+    frequency: RecurrenceFrequency
+    end_date: date
+
+    @field_validator("local_start")
+    @classmethod
+    def naive_local_start(cls, value: datetime) -> datetime:
+        return _local(value)
+
+
+class SeriesCreate(SeriesFields):
+    @model_validator(mode="after")
+    def matching_first_instant(self):
+        # starts_at is retained for the shared NoteWrite contract. Recurrence is
+        # authoritative from local_start + timezone and checked by the service.
+        return self
+
+
+class SeriesSplit(SeriesFields):
+    recurrence_key: datetime
+    expected_version: int = Field(ge=1)
+    expected_occurrence_version: int = Field(ge=1)
+
+    @field_validator("recurrence_key")
+    @classmethod
+    def aware_key(cls, value: datetime) -> datetime:
+        return _aware(value)
+
+
+class SeriesPortionRequest(BaseModel):
+    expected_version: int = Field(ge=1)
+    recurrence_key: datetime | None = None
+
+    @field_validator("recurrence_key")
+    @classmethod
+    def aware_key(cls, value: datetime | None) -> datetime | None:
+        return _aware(value) if value is not None else None
+
+
+class SeriesResponse(BaseModel):
+    id: uuid.UUID
+    lineage_id: uuid.UUID
+    predecessor_id: uuid.UUID | None
+    local_start: datetime
+    timezone: str
+    frequency: RecurrenceFrequency
+    end_date: date
+    split_boundary: datetime | None
+    title: str
+    body: str
+    active: bool
+    tag_ids: list[uuid.UUID]
+    reminder_offsets_minutes: list[int]
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    occurrence_count: int
 
 
 class NotificationResponse(BaseModel):
