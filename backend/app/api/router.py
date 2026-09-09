@@ -395,7 +395,9 @@ def _notes_filter(
 ):
     conditions = [
         Note.superseded_at.is_(None),
-        Note.deleted_at.is_not(None) if trash else Note.deleted_at.is_(None),
+        (Note.deleted_at.is_not(None) & Note.purged_at.is_(None))
+        if trash
+        else Note.deleted_at.is_(None),
     ]
     if active is not None:
         conditions.append(Note.active.is_(active))

@@ -72,7 +72,7 @@ async def note_response(session: AsyncSession, note: Note) -> NoteResponse:
 
 
 async def require_note(session: AsyncSession, note_id: uuid.UUID, *, lock: bool = False) -> Note:
-    stmt = select(Note).where(Note.id == note_id)
+    stmt = select(Note).where(Note.id == note_id, Note.purged_at.is_(None))
     if lock:
         stmt = stmt.with_for_update()
     note = (await session.execute(stmt)).scalar_one_or_none()

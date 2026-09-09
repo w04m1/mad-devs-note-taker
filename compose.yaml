@@ -110,6 +110,8 @@ services:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
+      mailpit:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "uv run --frozen celery -A app.jobs.celery_app:celery_app inspect ping --destination worker@$$HOSTNAME --timeout 2 | grep -q pong"]
       interval: 10s

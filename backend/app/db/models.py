@@ -96,6 +96,7 @@ class Note(Base, TimestampMixin, VersionMixin):
         Index("ix_notes_updated_id", "updated_at", "id"),
         Index("ix_notes_state_starts", "deleted_at", "active", "starts_at"),
         Index("ix_notes_deleted_at", "deleted_at"),
+        Index("ix_notes_purged_at", "purged_at"),
         Index(
             "ix_notes_search_trgm",
             "search_text",
@@ -116,6 +117,8 @@ class Note(Base, TimestampMixin, VersionMixin):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     # Identifies notes deleted by a reversible series-portion trash action.
     series_trashed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+    # Retained technical marker after user-visible trash content is permanently purged.
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
     series_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("recurrence_series.id"))
     recurrence_key: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
