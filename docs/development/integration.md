@@ -31,3 +31,11 @@
 - **Alternative and tradeoff:** An Alembic merge revision would retain parallel heads, but these branches are being integrated before release and have a natural dependency: cleanup must understand recurrence markers.
 - **Evidence:** Fresh-volume `docker compose up --build` migration gate and full backend checks after the focused fix.
 - **Deviations or unresolved work:** Revision `0001` still imports mutable ORM metadata; the QA workstream owns replacement with immutable operations.
+
+## 2026-09-09T18:53:13Z — Promote the complete local stack
+
+- **Problem or decision:** Operations documentation still described worker and Beat as unavailable after the background implementation landed.
+- **Chosen approach and reason:** Promote `docker compose up --build --wait` as the normal command only after a destructive fresh-volume run proved all images, the three-revision migration chain, seven long-lived health checks, the frontend proxy, and an addressed worker ping.
+- **Alternative and tradeoff:** Keeping subset startup instructions would be conservative but false and would hide the now-working reminder processes.
+- **Evidence:** Fresh volumes; `migrate` exited 0 at `0003_background`; seven services healthy; proxied readiness returned `{"status":"ok"}`; worker returned `pong`.
+- **Deviations or unresolved work:** Deeper failure/restart and cross-process tests remain assigned to the QA workstream.
