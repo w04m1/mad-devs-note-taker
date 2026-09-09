@@ -1,0 +1,163 @@
+name: mad-devs-note-taker
+
+x-backend: &backend
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+  image: mad-devs-note-taker-backend:local
+  env_file:
+    - path: .env
+      required: false
+  environment: &backend-environment
+    DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://notetaker:notetaker@postgres:5432/notetaker}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+    SMTP_HOST: ${SMTP_HOST:-mailpit}
+    SMTP_PORT: ${SMTP_PORT:-1025}
+    SMTP_FROM: ${SMTP_FROM:-notetaker@example.test}
+    SMTP_USERNAME: ${SMTP_USERNAME:-}
+    SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+    SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+    SMTP_TIMEOUT_SECONDS: ${SMTP_TIMEOUT_SECONDS:-10}
+    APP_DEFAULT_EMAIL: ${APP_DEFAULT_EMAIL:-demo@example.test}
+    APP_DEFAULT_TIMEZONE: ${APP_DEFAULT_TIMEZONE:-Europe/Budapest}
+    REMINDER_SCAN_INTERVAL_SECONDS: ${REMINDER_SCAN_INTERVAL_SECONDS:-1}
+    REMINDER_GRACE_SECONDS: ${REMINDER_GRACE_SECONDS:-60}
+    REMINDER_CLAIM_SECONDS: ${REMINDER_CLAIM_SECONDS:-30}
+    OUTBOX_POLL_INTERVAL_SECONDS: ${OUTBOX_POLL_INTERVAL_SECONDS:-1}
+    TRASH_CLEANUP_INTERVAL_SECONDS: ${TRASH_CLEANUP_INTERVAL_SECONDS:-3600}
+    MAX_SERIES_OCCURRENCES: ${MAX_SERIES_OCCURRENCES:-10000}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  init: true
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16.4-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-notetaker}
+      POSTGRES_USER: ${POSTGRES_USER:-notetaker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-notetaker}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 5s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.1-alpine3.20
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.21.7
+    environment:
+      MP_SMTP_BIND_ADDR: 0.0.0.0:1025
+      MP_UI_BIND_ADDR: 0.0.0.0:8025
+    ports:
+      - "${MAILPIT_BIND_ADDRESS:-127.0.0.1}:${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
+    restart: unless-stopped
+
+  migrate:
+    <<: *backend
+    command: ["uv", "run", "--frozen", "alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    <<: *backend
+    command: ["uv", "run", "--frozen", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "/app/docker-healthcheck.py", "http://127.0.0.1:8000/api/v1/health/ready"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  worker:
+    <<: *backend
+    command: ["uv", "run", "--frozen", "celery", "-A", "app.jobs.celery_app:celery_app", "worker", "--loglevel=INFO", "--hostname=worker@%h"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "uv run --frozen celery -A app.jobs.celery_app:celery_app inspect ping --destination worker@$$HOSTNAME --timeout 2 | grep -q pong"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
+  beat:
+    <<: *backend
+    command: ["uv", "run", "--frozen", "celery", "-A", "app.jobs.celery_app:celery_app", "beat", "--loglevel=INFO", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 15s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: mad-devs-note-taker-frontend:local
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      VITE_PROXY_TARGET: ${VITE_PROXY_TARGET:-http://backend:8000}
+      VITE_HOST: 0.0.0.0
+    command: ["pnpm", "dev", "--host", "0.0.0.0", "--port", "5173"]
+    ports:
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-5173}:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "/app/docker-healthcheck.mjs", "http://127.0.0.1:5173/"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    init: true
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
