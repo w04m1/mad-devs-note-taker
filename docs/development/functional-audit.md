@@ -33,7 +33,7 @@ into PostgreSQL evidence.
 | Command or reproduction | Result and boundary |
 |---|---|
 | `git status --short --branch` and `git rev-parse HEAD` | Main was clean at `defa868561e075afcd35a6b1ddf4af1bd36dd120` before audit work. A temporary untracked test appeared during the audit and its owner subsequently removed it; main is clean again. A formatter also rewrote `frontend/package.json` during the root gate; inspection followed by `git restore -- frontend/package.json` returned the audited tree to the exact revision. |
-| `./scripts/test.sh` | Passed on exact main. It ran 18 safe backend tests, the isolated PostgreSQL/service phase, migration cycles plus `alembic check`, 30 frontend tests in 12 files, and the production build. The current build transformed 2,086 modules and emitted a 795.00 kB main chunk (240.68 kB gzip), with the expected Vite size warning. |
+| `./scripts/test.sh` | Passed on exact main. It ran 18 safe backend tests and 28 isolated PostgreSQL/real-service tests, migration cycles plus `alembic check`, 30 frontend tests in 12 files, and the production build. The current build transformed 2,086 modules and emitted a 795.00 kB main chunk (240.68 kB gzip), with the expected Vite size warning. |
 | `./scripts/compose-config.sh` and `cd backend && uv run --frozen alembic heads` | Compose validation passed; Alembic reported `0003_background (head)`. |
 | `cd backend && .venv/bin/pytest -q` | 18 passed, 28 skipped, with two dependency deprecation warnings. The skipped cases need `TEST_DATABASE_URL`; this lightweight run is not PostgreSQL/service evidence. |
 | `cd frontend && pnpm test -- --run` | 12 files and 30 tests passed. A temporary audit-only suite separately passed 5/5 before its owner deleted it. |
@@ -48,6 +48,8 @@ into PostgreSQL evidence.
 | Generated `app.openapi()` consumed with `openapi-typescript 7.13.0` | Generation completed, but the generated page item type was `unknown[]`, confirming the non-authoritative/untyped page contract rather than a tool execution failure. |
 | Targeted ASGI/domain probes plus temporary PostgreSQL race tests | Confirmed `q="a b"` is accepted with only two non-space characters; huge page values can produce 500; date-max expansion can fail; configured cap can exceed 10,000; pseudo-zones/weak email pass validation; 100 `ß` characters can expand under casefold and fail; composed/decomposed tag names can coexist; concurrent normalized tag create produced 201 + 500 and rename produced 200 + 500. Temporary resources were removed. |
 | `http://127.0.0.1:5173` plus isolated Compose browser stacks, each with two independent Chromium contexts | Confirmed core CRUD/realtime flows, the Settings stale-draft overwrite, stale future-series and Calendar-scope overwrites, duplicate create/admission windows, and recurring-trash representation/restore behavior. Audit-created product rows were cleaned through supported APIs where possible. |
+| Fresh isolated `./tests/e2e/run.sh` | All 6 Chromium scenarios passed in 36.3 seconds (81.6 seconds for the complete wrapper). Its containers, network, and volumes were removed. |
+| Isolated Beat project `beat-audit-38506`, including `SIGSTOP` and Redis-loss probes | The PID-only health check stayed healthy while the scheduler was stopped for 46.6 seconds and its queue stopped advancing. It also stayed healthy throughout Redis loss while publish attempts blocked or failed. The isolated project and volumes were removed; the main Compose project was not touched. |
 
 The audit also inspected generated OpenAPI, Compose configuration, Alembic head,
 tracked E2E artifacts, and source paths. `tests/e2e/artifacts/results/.last-run.json`
@@ -171,7 +173,11 @@ Exact endpoint/schema design remains remediation work, not a change made here.
   same still-live worker can resume and send. Finalization updates only rows still
   in `attempt_started`, so the authoritative DB/UI can remain `unknown` although
   `deliver()` succeeded. The at-most-one application-attempt promise remains
-  intact, but the recorded outcome can be false.
+  intact, but the recorded outcome can be false. The agreed correction treats the
+  maintenance result as provisional: only the same immutable claim token that was
+  already authorized may reconcile `unknown` to the observed `sent` or definitive
+  `failed` result. It must not authorize a retry or second SMTP invocation. SMTP
+  remains outside database transactions.
 - **Medium — recovery invariants are not database constraints.** The schema permits
   `claimed` with null claim expiry and `attempt_started` with null authorization
   time. Normal code supplies both, but imported/corrupt rows can become
@@ -193,10 +199,11 @@ behaviors are not defects.
   remain open. The frontend fallback poll starts on WebSocket close, not on
   degraded state, so mutations during a long Pub/Sub outage can remain unseen.
 - **High — startup/late-join race can lose invalidation.** WebSockets can be
-  accepted before Redis subscription readiness. Redis `PUBLISH` returning zero
-  subscribers is still marked published, and the first client `onopen` skips
-  invalidation. A mutation between initial HTTP read and effective subscription
-  can therefore remain stale indefinitely.
+  accepted before Redis subscription readiness, and the first client `onopen`
+  skips invalidation. A mutation between initial HTTP read and effective
+  subscription can therefore remain stale indefinitely. Redis `PUBLISH` returning
+  zero subscribers is correctly marked published; changing that outbox rule would
+  not close this readiness/reconciliation gap.
 - **Medium/High — readiness and focus do not close the gap.** `/health/ready`
   reports only PostgreSQL. Global focus handling relies on TanStack staleness, so
   a fresh-but-wrong cache may not refetch. Notification dedupe is count-capped
@@ -206,8 +213,13 @@ behaviors are not defects.
 Redis Pub/Sub itself remains an allowed non-replaying transport. The defect is the
 missing reliable degraded/startup resynchronization, not the lack of replay.
 
-### 6. Frontend optimistic concurrency and mutation admission
+### 6. Settings and frontend optimistic concurrency
 
+- **High — first-use Settings initialization races.** Deterministic concurrent
+  first GET/GET and GET/PATCH probes both reached the absent singleton before
+  insert. One request then escaped as a duplicate-primary-key 500; depending on
+  insert order, PATCH can lose to the default row. The minimum backend correction
+  is conflict-safe singleton creation followed by reselect-and-lock for PATCH.
 - **High — dirty Settings can silently overwrite another client.** Two-browser
   proof: both opened v1; A saved v2; B's mounted dirty inputs survived realtime
   refetch but submit read the new prop version 2; B received 200/v3 and replaced
@@ -292,6 +304,13 @@ missing reliable degraded/startup resynchronization, not the lack of replay.
 
 ### 9. Operations and accessibility
 
+- **High operational — Beat health is a PID-liveness false positive.** The current
+  check only tests that a nonempty PID file names an existing process. It stayed
+  healthy while the scheduler process was stopped and while Redis publish attempts
+  blocked or failed, so it has no finite failure-detection bound for either wedge.
+  A Beat-owned freshness marker must advance only after a successful broker
+  publish; merely checking the process or worker execution does not prove scheduler
+  progress.
 - **Medium operational — structured application logging is absent.** Application
   code does not provide the PLAN §16 correlation/redaction envelope for request
   failures, reminder recovery/missed/unknown transitions, enqueue/outbox retries
@@ -312,12 +331,14 @@ These are missing proof, not automatic functional failures:
 1. **High evidence risk:** deterministic two-transaction PostgreSQL tests for
    aggregate Note snapshots, stale ORM identity/membership, note/tag association
    writers, tag delete-versus-write, occurrence edit-versus-split,
-   split-versus-split, settings initialization/write, grouped restore-versus-cleanup,
-   and split-versus-restore.
+   split-versus-split, grouped restore-versus-cleanup, split-versus-restore, and
+   same-row Settings writes after initialization. First-use singleton
+   initialization is already confirmed rather than an evidence-only gap.
 2. **High evidence risk:** the full reminder crash matrix at claim, enqueue,
    authorization, SMTP, and commit boundaries; recurrence/retention authorization
-   races; backlog draining; live-worker classification; and black-box open-socket
-   plus late-join Redis outage/recovery.
+   races; backlog draining; and longer black-box open-socket plus late-join Redis
+   outage/recovery cycles. The live-worker classification interleaving itself is
+   confirmed rather than an evidence-only gap.
 3. **Medium evidence risk:** the audit did prove one product-level
    reminder/restart/grace path in the isolated persistence project. It did not
    exhaust a prolonged-outage matrix across every service order, every reminder
@@ -355,14 +376,20 @@ These are missing proof, not automatic functional failures:
   selected by immutable original `recurrence_key`, not displayed `starts_at`.
 - **Allowed — at-most-one application SMTP attempt.** Exactly-once external email
   receipt across SMTP/DB crash boundaries is impossible. Ambiguous outcomes remain
-  `unknown` with no retry.
+  `unknown` with no retry. A maintenance-created `unknown` is provisional while
+  the same already-authorized token is still live and may be corrected from that
+  attempt's eventual observed result; it never grants new send authority.
 - **Allowed — product caps and recurrence policy.** Finite series cap at 10,000;
   skipped invalid monthly/DST candidates; earlier fold for recurring ambiguity;
   list/upcoming page max 100; Calendar range max 93 days and explicit 5,000-result
   guard.
 - **Allowed — Redis Pub/Sub does not replay.** HTTP remains authoritative and
-  refetch-based recovery is the design. The confirmed problem is incomplete entry
-  into and recovery from degraded/startup states.
+  refetch-based recovery is the design. Redis `PUBLISH == 0` is successful outbox
+  publication: the count is current Redis subscribers, not durable storage or
+  browser acknowledgement, and retrying on zero would incorrectly couple outbox
+  completion to subscriber presence. Exceptions and timeouts still retry. The
+  confirmed problem is incomplete entry into and recovery from degraded/startup
+  states.
 - **Allowed/documented deployment/test limits.** Local unauthenticated
   single-profile/no TLS, Chromium-only serial E2E, host-sensitive performance
   tripwires, and third-party logs remaining native are accepted boundaries.
@@ -371,7 +398,15 @@ These are missing proof, not automatic functional failures:
   double-submit. Keys become required only if safe manual retry after an ambiguous
   response is promised.
 
-## Unresolved contract decision
+## Contract decisions
+
+The recurrence-authority decision is resolved for the local v1: add one
+backend-authoritative preview endpoint that accepts naive `local_start`, IANA
+`timezone`, and the recurrence rule. The UI uses its returned first instant in the
+existing required `starts_at` field, and the unchanged create/split mutations
+re-expand with the same pinned backend resolver and reject atomically if the value
+no longer matches. Do not add canonical sibling mutation routes or a resolver
+fingerprint now; preview is informative and the mutation remains authoritative.
 
 One material interface decision remains unresolved. `docs/contracts.md` says that
 series mutations carry `expected_series_version`, while split/trash/restore
