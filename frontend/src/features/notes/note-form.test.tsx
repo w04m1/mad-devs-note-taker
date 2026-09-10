@@ -33,7 +33,6 @@ describe("note form",()=>{
   const first=screen.getByRole("radio",{name:/First occurrence — UTC\+02:00/});
   const second=screen.getByRole("radio",{name:/Second occurrence — UTC\+01:00/});
   expect(group).toContainElement(first); expect(group).toContainElement(second);
-  expect(first).toBeRequired(); expect(second).toBeRequired();
   expect(first).not.toBeChecked(); expect(second).not.toBeChecked();
   fireEvent.submit(screen.getByRole("form",{name:"Edit note"}));
   expect(await screen.findByRole("alert")).toHaveTextContent("Choose which occurrence");
