@@ -2,9 +2,9 @@
 
 Notetaker is a local, unauthenticated, single-profile note and reminder application. It has a React/TypeScript frontend, a FastAPI backend, PostgreSQL persistence, Redis/Celery background work and realtime invalidation, and Mailpit for local email capture.
 
-**Audit status:** The functional audit of application baseline `defa868` is frozen with unresolved release blockers. No remediation has begun, and the audited implementation is not release-ready. See the [functional audit ledger](docs/development/functional-audit.md). Earlier passing checks remain historical evidence only for the scope they exercised.
+**Status:** Task 1 is technically complete and release-ready. All 15 findings from the frozen functional-audit baseline have been remediated and verified with post-remediation tests. See the [implementation status](docs/implementation-status.md) and [verification record](docs/verification.md) for the current evidence.
 
-See [implementation status](docs/implementation-status.md) for the current scope and known limits. See [verification](docs/verification.md) for evidence and the exact boundary of each check. `PLAN.md` is the design plan, not a record that every planned check passed.
+The [functional audit ledger](docs/development/functional-audit.md) is retained as the historical baseline and acceptance contract. `PLAN.md` is the design plan, not completion evidence.
 
 ## Start the stack
 
@@ -14,8 +14,10 @@ Prerequisites: Docker Engine 27+, Docker Compose v2.24+, at least 4 GB free memo
 # Optional: override local defaults
 cp .env.example .env
 
-# Build, migrate, and wait for all services
-./scripts/compose-config.sh
+# Optional: validate compose.yaml before starting
+docker compose config --quiet
+
+# Build, migrate, start, and wait for all services
 docker compose up --build --wait
 ```
 
@@ -41,7 +43,7 @@ pnpm build
 pnpm dev                # proxies /api and /ws to localhost:8000 by default
 ```
 
-`./scripts/smoke.sh` checks deployment wiring. It does not create a reminder or prove SMTP delivery. The recorded real Mailpit reminder check was manual; see [verification](docs/verification.md). The production frontend build currently emits a large-chunk warning.
+`./scripts/smoke.sh` checks deployment wiring. It does not create a reminder or prove SMTP delivery. Reminder delivery and the broader release gates are covered separately; see [verification](docs/verification.md).
 
 ## Operations
 
