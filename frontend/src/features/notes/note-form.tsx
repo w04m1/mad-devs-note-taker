@@ -92,11 +92,13 @@ export function NoteForm({
   onSaved: () => void;
   onCancel: () => void;
 }) {
+  const [authoringTimezone] = useState(timezone);
+  const [originalDraft] = useState(() => initial(authoringTimezone, note));
   // Deliberately initialize once. Query invalidation/realtime rerenders must not overwrite a dirty draft.
-  const [draft, setDraft] = useState<Draft>(() => initial(timezone, note));
+  const [draft, setDraft] = useState<Draft>(originalDraft);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [overlapChoice, setOverlapChoice] = useState<string | null>(null);
-  const overlapChoices = manualNoteChoices(draft.starts_at, timezone);
+  const overlapChoices = manualNoteChoices(draft.starts_at, authoringTimezone);
   const mutations = useNoteMutations();
   const mutation = note ? mutations.update : mutations.create;
   const [conflict, setConflict] = useState<unknown>(null);
@@ -104,11 +106,10 @@ export function NoteForm({
     e.preventDefault();
     setErrors({});
     setConflict(null);
-    const startsAt = manualNoteInstant(
-      draft.starts_at,
-      timezone,
-      overlapChoice,
-    );
+    const startsAt =
+      note && draft.starts_at === originalDraft.starts_at
+        ? note.starts_at
+        : manualNoteInstant(draft.starts_at, authoringTimezone, overlapChoice);
     if (startsAt === null) {
       setErrors({
         starts_at:
@@ -231,7 +232,7 @@ export function NoteForm({
             This time occurs twice. Choose one.
           </legend>
           <p className="text-sm text-muted-foreground">
-            Timezone: {timezone}. The UTC offsets lead to different reminder
+            Timezone: {authoringTimezone}. The UTC offsets lead to different reminder
             times.
           </p>
           <RadioGroup

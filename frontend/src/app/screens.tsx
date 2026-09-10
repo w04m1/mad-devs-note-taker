@@ -280,6 +280,10 @@ export function NotesScreen() {
     value
       ? (DateTime.fromISO(value, { zone }).toUTC().toISO() ?? undefined)
       : undefined;
+  if (settings.isPending)
+    return <Screen title="Notes" description="Search, filter, sort, and edit notes."><Loading label="Loading authoring timezone…" /></Screen>;
+  if (settings.isError)
+    return <Screen title="Notes" description="Search, filter, sort, and edit notes."><ErrorMessage error={settings.error} /></Screen>;
   return (
     <Screen
       title="Notes"
@@ -673,8 +677,11 @@ export function UpcomingScreen() {
     queryFn: api.tags.list,
   });
   const [opened, setOpened] = useState<Note>();
-  const zone =
-    settings.data?.timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (settings.isPending)
+    return <Screen title="Upcoming" description="Today, this week, and past active notes."><Loading label="Loading authoring timezone…" /></Screen>;
+  if (settings.isError)
+    return <Screen title="Upcoming" description="Today, this week, and past active notes."><ErrorMessage error={settings.error} /></Screen>;
+  const zone = settings.data.timezone;
   return (
     <Screen
       title="Upcoming"
@@ -721,7 +728,7 @@ export function TrashScreen() {
   const [page, setPage] = useState(1);
   const query = useQuery({
     queryKey: [...queryKeys.trash.all, page],
-    queryFn: () => api.notes.list({ trash: true, page, page_size: 20 }),
+    queryFn: () => api.trash.list(page, 20),
   });
   const { restore } = useNoteMutations();
   const [error, setError] = useState<unknown>();
@@ -740,25 +747,30 @@ export function TrashScreen() {
       ) : (
         <>
           <ul className="grid gap-3 lg:grid-cols-2">
-            {query.data.items.map((note) => (
+            {query.data.items.map((group) => {
+              const note = group.kind === "series_action" ? group.preview : group.note;
+              return (
               <li
                 className="flex items-center justify-between gap-4 rounded-xl border bg-card p-5 shadow-sm"
-                key={note.id}
+                key={group.kind === "series_action" ? group.action_id : `${group.kind}-${note.id}`}
               >
                 <div>
                   <strong>{note.title}</strong>
+                  {group.kind === "series_action" && <p className="text-sm">{group.count} recurring notes</p>}
                   <p className="mt-1 text-sm text-muted-foreground">
                     Deleted{" "}
-                    {note.deleted_at
-                      ? new Date(note.deleted_at).toLocaleString()
-                      : "recently"}
+                    {new Date(group.trashed_at).toLocaleString()}
                   </p>
                 </div>
                 <Button
                   size="sm"
                   onClick={() =>
                     void (
-                      note.series_id
+                      group.kind === "series_action"
+                        ? api.series.get(group.series_id).then((series) =>
+                            api.trash.restoreAction(group.action_id, series.version),
+                          )
+                        : note.series_id
                         ? api.series.get(note.series_id).then((series) =>
                             restore.mutateAsync({
                               id: note.id,
@@ -777,7 +789,8 @@ export function TrashScreen() {
                   Restore
                 </Button>
               </li>
-            ))}
+              );
+            })}
           </ul>
           <Pagination
             page={query.data.page}

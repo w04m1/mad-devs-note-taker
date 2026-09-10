@@ -10,7 +10,7 @@ import { DateTime } from "luxon";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../../api/client";
 import { queryKeys } from "../../api/query-keys";
-import type { Note } from "../../api/contracts";
+import type { Note, RecurrenceSeries } from "../../api/contracts";
 import { NoteForm } from "../notes/note-form";
 import { RecurringEditChoice } from "../recurrence/series-form";
 import { Button } from "../../components/ui/button";
@@ -25,7 +25,7 @@ import {
 
 type View = "dayGridMonth" | "timeGridWeek" | "timeGridDay";
 type Range = { starts_from: string; starts_to: string };
-type PendingDrop = { info: EventDropArg; note: Note; startsAt: string };
+type PendingDrop = { info: EventDropArg; note: Note; startsAt: string; series: RecurrenceSeries | undefined };
 const views = new Set<View>(["dayGridMonth", "timeGridWeek", "timeGridDay"]);
 
 /** Preserve FullCalendar's offset-qualified named-zone result instead of reinterpreting it in the browser zone. */
@@ -58,6 +58,7 @@ export function CalendarView({
   const [pending, setPending] = useState<PendingDrop>();
   const [error, setError] = useState<string>();
   const notesById = useRef(new Map<string, Note>());
+  const dragSeries = useRef<Promise<RecurrenceSeries> | undefined>(undefined);
   const client = useQueryClient();
   const query = useQuery({
     queryKey: [...queryKeys.calendar.all, range],
@@ -109,9 +110,7 @@ export function CalendarView({
   };
   const moveOne = async (p: PendingDrop) => {
     try {
-      let seriesVersion: number | undefined;
-      if (p.note.series_id)
-        seriesVersion = (await api.series.get(p.note.series_id)).version;
+      const seriesVersion = p.series?.version;
       await api.notes.update(p.note.id, {
         title: p.note.title,
         body: p.note.body,
@@ -135,7 +134,8 @@ export function CalendarView({
     try {
       if (!p.note.series_id || !p.note.recurrence_key)
         throw new Error("Series details are unavailable.");
-      const series = await api.series.get(p.note.series_id);
+      if (!p.series) throw new Error("Series intent token is unavailable.");
+      const series = p.series;
       const local = DateTime.fromISO(p.startsAt, { setZone: true }).setZone(
         series.timezone,
       );
@@ -151,7 +151,7 @@ export function CalendarView({
         frequency: series.frequency,
         end_date: series.end_date,
         recurrence_key: p.note.recurrence_key,
-        expected_version: series.version,
+        expected_series_version: series.version,
         expected_occurrence_version: p.note.version,
       });
       setPending(undefined);
@@ -166,7 +166,13 @@ export function CalendarView({
     setPending(undefined);
     void invalidate();
   };
-  const drop = (info: EventDropArg) => {
+  const startDrag = (info: { event: { id: string } }) => {
+    const note = notesById.current.get(info.event.id);
+    dragSeries.current = note?.series_id
+      ? api.series.get(note.series_id)
+      : undefined;
+  };
+  const drop = async (info: EventDropArg) => {
     setError(undefined);
     const note = notesById.current.get(info.event.id);
     if (!note || !info.event.start || !info.event.startStr) {
@@ -175,7 +181,11 @@ export function CalendarView({
     }
     try {
       const startsAt = droppedInstant(info.event.startStr, timezone);
-      const p = { info, note, startsAt };
+      const series = note.series_id
+        ? await (dragSeries.current ?? api.series.get(note.series_id))
+        : undefined;
+      const p = { info, note, startsAt, series };
+      dragSeries.current = undefined;
       if (note.series_id) setPending(p);
       else void moveOne(p);
     } catch (e) {
@@ -209,6 +219,7 @@ export function CalendarView({
               interactionPlugin,
               luxonPlugin,
             ]}
+            eventDragStart={startDrag}
             initialView={desiredView}
             initialDate={desiredDate}
             timeZone={timezone}

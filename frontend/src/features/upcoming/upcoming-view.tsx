@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DateTime } from "luxon";
 import { api } from "../../api/client";
@@ -59,11 +59,13 @@ const format = (iso: string, timezone: string) =>
 function Group({
   title,
   notes,
+  total,
   timezone,
   onOpen,
 }: {
   title: string;
   notes: Note[];
+  total: number;
   timezone: string;
   onOpen: (note: Note) => void;
 }) {
@@ -75,12 +77,12 @@ function Group({
       <div className="flex items-center justify-between">
         <h2
           id={`upcoming-${title.replaceAll(" ", "-")}`}
-          aria-label={`${title} (${notes.length})`}
+          aria-label={`${title} (${total})`}
           className="text-lg font-semibold tracking-tight"
         >
           {title}
         </h2>
-        <Badge variant="secondary">{notes.length}</Badge>
+        <Badge variant="secondary">{total}</Badge>
       </div>
       {notes.length === 0 ? (
         <p className="rounded-xl border border-dashed bg-card p-5 text-sm text-muted-foreground">
@@ -120,38 +122,33 @@ export function UpcomingView({
   timezone: string;
   onOpen: (note: Note) => void;
 }) {
+  const [page, setPage] = useState(1);
   const query = useQuery({
-    queryKey: queryKeys.upcoming.all,
-    queryFn: api.upcoming,
+    queryKey: [...queryKeys.upcoming.all, page],
+    queryFn: () => api.upcoming(page, 50),
   });
   useUpcomingRefresh(query.data, timezone);
   if (query.isPending) return <p role="status">Loading upcoming notes…</p>;
   if (query.isError)
     return <p role="alert">Upcoming notes could not be loaded.</p>;
+  const maximumTotal = Math.max(
+    query.data.today.total,
+    query.data.week.total,
+    query.data.past.total,
+  );
+  const pages = Math.max(1, Math.ceil(maximumTotal / 50));
   return (
-    <div
-      className="grid gap-6 xl:grid-cols-3"
-      aria-live="polite"
-      aria-busy={query.isFetching}
-    >
-      <Group
-        title="Today"
-        notes={query.data.today.items}
-        timezone={timezone}
-        onOpen={onOpen}
-      />
-      <Group
-        title="This week"
-        notes={query.data.week.items}
-        timezone={timezone}
-        onOpen={onOpen}
-      />
-      <Group
-        title="Past active"
-        notes={query.data.past.items}
-        timezone={timezone}
-        onOpen={onOpen}
-      />
+    <div aria-live="polite" aria-busy={query.isFetching} className="space-y-6">
+      <div className="grid gap-6 xl:grid-cols-3">
+        <Group title="Today" notes={query.data.today.items} total={query.data.today.total} timezone={timezone} onOpen={onOpen} />
+        <Group title="This week" notes={query.data.week.items} total={query.data.week.total} timezone={timezone} onOpen={onOpen} />
+        <Group title="Past active" notes={query.data.past.items} total={query.data.past.total} timezone={timezone} onOpen={onOpen} />
+      </div>
+      <nav aria-label="Upcoming pages" className="flex items-center justify-center gap-3">
+        <button className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" disabled={page === 1} onClick={() => setPage((value) => value - 1)}>Previous</button>
+        <span className="text-sm text-muted-foreground">Page {page} of {pages}</span>
+        <button className="rounded-md border px-3 py-2 text-sm disabled:opacity-50" disabled={page >= pages} onClick={() => setPage((value) => value + 1)}>Next</button>
+      </nav>
     </div>
   );
 }

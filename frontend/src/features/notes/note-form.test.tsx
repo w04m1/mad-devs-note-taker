@@ -64,5 +64,24 @@ describe("note form",()=>{
   expect(JSON.parse(String(request.body)).starts_at).toBe("2026-10-25T02:30:00.000+01:00");
  });
  it("keeps a dirty draft when its parent rerenders with refreshed data",async()=>{const client=new QueryClient({defaultOptions:{mutations:{retry:false}}});const view=render(wrapper(client));const title=screen.getByLabelText("Title");await userEvent.clear(title);await userEvent.type(title,"My local draft");view.rerender(<QueryClientProvider client={client}><NoteForm note={{...note,title:"Remote title",version:2}} tags={[]} timezone="UTC" onSaved={vi.fn()} onCancel={vi.fn()}/></QueryClientProvider>);expect(screen.getByLabelText("Title")).toHaveValue("My local draft")});
+ it("preserves the exact original instant when the minute field is unchanged",async()=>{
+  const precise={...note,starts_at:"2026-10-25T01:30:45.123456Z"};
+  const client=new QueryClient({defaultOptions:{mutations:{retry:false}}});
+  const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify(precise),{status:200,headers:{"content-type":"application/json"}}));vi.stubGlobal("fetch",fetchMock);
+  render(<QueryClientProvider client={client}><NoteForm note={precise} tags={[]} timezone="Europe/Budapest" onSaved={vi.fn()} onCancel={vi.fn()}/></QueryClientProvider>);
+  fireEvent.submit(screen.getByRole("form",{name:"Edit note"}));
+  await waitFor(()=>expect(fetchMock).toHaveBeenCalledOnce());
+  expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body)).starts_at).toBe(precise.starts_at);
+ });
+ it("pins the authoring timezone across a parent settings change",async()=>{
+  const client=new QueryClient({defaultOptions:{mutations:{retry:false}}});
+  const fetchMock=vi.fn().mockResolvedValue(new Response(JSON.stringify(note),{status:200,headers:{"content-type":"application/json"}}));vi.stubGlobal("fetch",fetchMock);
+  const view=render(<QueryClientProvider client={client}><NoteForm note={note} tags={[]} timezone="UTC" onSaved={vi.fn()} onCancel={vi.fn()}/></QueryClientProvider>);
+  view.rerender(<QueryClientProvider client={client}><NoteForm note={note} tags={[]} timezone="America/New_York" onSaved={vi.fn()} onCancel={vi.fn()}/></QueryClientProvider>);
+  fireEvent.change(screen.getByLabelText("Date and time"),{target:{value:"2026-04-02T10:00"}});
+  fireEvent.submit(screen.getByRole("form",{name:"Edit note"}));
+  await waitFor(()=>expect(fetchMock).toHaveBeenCalledOnce());
+  expect(JSON.parse(String((fetchMock.mock.calls[0]![1] as RequestInit).body)).starts_at).toBe("2026-04-02T10:00:00.000Z");
+ });
  it("shows a 409 conflict and preserves the submitted draft",async()=>{const client=new QueryClient({defaultOptions:{mutations:{retry:false}}});vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({code:"version_conflict",message:"Changed",field_errors:null,current:{...note,title:"Remote title",version:2}}),{status:409,headers:{"content-type":"application/json"}})));render(wrapper(client));const title=screen.getByLabelText("Title");await userEvent.clear(title);await userEvent.type(title,"My local draft");fireEvent.submit(screen.getByRole("form",{name:"Edit note"}));await waitFor(()=>expect(screen.getByText("This note changed elsewhere.")).toBeInTheDocument());expect(title).toHaveValue("My local draft");expect(screen.getByText("Latest server value")).toBeInTheDocument()});
 });

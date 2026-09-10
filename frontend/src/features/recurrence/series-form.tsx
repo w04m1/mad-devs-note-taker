@@ -86,7 +86,7 @@ export function SeriesForm({
   onSaved: () => void;
   onCancel: () => void;
 }) {
-  const scheduleZone = series?.timezone ?? timezone;
+  const [scheduleZone] = useState(series?.timezone ?? timezone);
   const [draft, setDraft] = useState(() =>
     defaults(scheduleZone, note, series),
   );
@@ -111,15 +111,8 @@ export function SeriesForm({
     e.preventDefault();
     setError("");
     const local = DateTime.fromISO(draft.local_start, { zone: scheduleZone });
-    const startsAt = recurrenceStartInstant(draft.local_start, scheduleZone);
     if (!draft.title.trim()) {
       setError("Title is required.");
-      return;
-    }
-    if (!startsAt) {
-      setError(
-        "That local date and time does not exist in the schedule timezone.",
-      );
       return;
     }
     if (draft.end_date < local.toISODate()!) {
@@ -127,6 +120,20 @@ export function SeriesForm({
       return;
     }
     setBusy(true);
+    const recurrence = {
+      local_start: draft.local_start,
+      timezone: scheduleZone,
+      frequency: draft.frequency,
+      end_date: draft.end_date,
+    };
+    let startsAt: string;
+    try {
+      startsAt = (await api.series.preview(recurrence)).starts_at;
+    } catch (previewError) {
+      setBusy(false);
+      setError(previewError instanceof Error ? previewError.message : "Recurrence preview failed");
+      return;
+    }
     const common = {
       ...draft,
       title: draft.title.trim(),
@@ -137,11 +144,11 @@ export function SeriesForm({
       if (note) {
         if (!note.series_id || !note.recurrence_key)
           throw new Error("Series context is missing.");
-        const current = await api.series.get(note.series_id);
-        await api.series.split(current.id, {
+        if (!series) throw new Error("Series context is missing.");
+        await api.series.split(series.id, {
           ...common,
           recurrence_key: note.recurrence_key,
-          expected_version: current.version,
+          expected_series_version: series.version,
           expected_occurrence_version: note.version,
         });
       } else await api.series.create(common);
