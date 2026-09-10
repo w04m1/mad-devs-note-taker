@@ -1,0 +1,89 @@
+{
+  "captured_at": "2026-09-10T16:52:20.337014+00:00",
+  "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.36",
+  "python": "3.12.7",
+  "runs_per_case": 3,
+  "cases": {
+    "zero_offsets": {
+      "offsets": [],
+      "runs": [
+        {
+          "seconds": 1.446,
+          "notes": 10000,
+          "rules": 0,
+          "deliveries": 0,
+          "rolled_back_notes": 0,
+          "read_probe_count": 26,
+          "p95_read_seconds": 0.089,
+          "max_read_seconds": 0.136
+        },
+        {
+          "seconds": 1.62,
+          "notes": 10000,
+          "rules": 0,
+          "deliveries": 0,
+          "rolled_back_notes": 0,
+          "read_probe_count": 25,
+          "p95_read_seconds": 0.111,
+          "max_read_seconds": 0.158
+        },
+        {
+          "seconds": 1.398,
+          "notes": 10000,
+          "rules": 0,
+          "deliveries": 0,
+          "rolled_back_notes": 0,
+          "read_probe_count": 23,
+          "p95_read_seconds": 0.11,
+          "max_read_seconds": 0.138
+        }
+      ],
+      "median_seconds": 1.446,
+      "median_gate_seconds": 10.0,
+      "passed": true
+    },
+    "three_offsets": {
+      "offsets": [
+        10,
+        60,
+        1440
+      ],
+      "runs": [
+        {
+          "seconds": 8.37,
+          "notes": 10000,
+          "rules": 30000,
+          "deliveries": 30000,
+          "rolled_back_notes": 0,
+          "read_probe_count": 94,
+          "p95_read_seconds": 0.002,
+          "max_read_seconds": 1.136
+        },
+        {
+          "seconds": 9.674,
+          "notes": 10000,
+          "rules": 30000,
+          "deliveries": 30000,
+          "rolled_back_notes": 0,
+          "read_probe_count": 160,
+          "p95_read_seconds": 0.002,
+          "max_read_seconds": 0.141
+        },
+        {
+          "seconds": 13.983,
+          "notes": 10000,
+          "rules": 30000,
+          "deliveries": 30000,
+          "rolled_back_notes": 0,
+          "read_probe_count": 366,
+          "p95_read_seconds": 0.001,
+          "max_read_seconds": 0.219
+        }
+      ],
+      "median_seconds": 9.674,
+      "median_gate_seconds": 45.0,
+      "passed": true
+    }
+  },
+  "passed": true
+}

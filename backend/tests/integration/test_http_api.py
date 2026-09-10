@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -10,7 +11,9 @@ from sqlalchemy import text
 from app.api import router as api_router
 from app.config import Settings, get_settings
 from app.db.session import async_engine, sync_session_factory
+from app.email.senders import FakeEmailSender
 from app.jobs.maintenance import purge_trash
+from app.jobs.reminders import deliver
 from app.main import app
 
 pytestmark = [
@@ -767,6 +770,84 @@ async def test_changed_split_supersedes_old_slots_and_cancels_their_reminders(
         ).scalar_one()
     assert old == [(True, "cancelled"), (True, "cancelled")]
     assert fresh_count == 3
+
+    ghost = notes[1]
+    assert (await client.get(f"/api/v1/notes/{ghost['id']}")).status_code == 404
+    assert (
+        await client.post(
+            f"/api/v1/notes/{ghost['id']}/restore",
+            json={
+                "expected_version": ghost["version"] + 1,
+                "expected_series_version": successor["version"],
+            },
+        )
+    ).status_code == 404
+    assert (
+        await client.patch(
+            f"/api/v1/notes/{ghost['id']}",
+            json={
+                "title": "Ghost edit",
+                "body": "must not send",
+                "starts_at": ghost["starts_at"],
+                "active": True,
+                "tag_ids": [],
+                "reminder_offsets_minutes": [10],
+                "expected_version": ghost["version"] + 1,
+                "expected_series_version": successor["version"],
+            },
+        )
+    ).status_code == 404
+
+    token = uuid.uuid4()
+    authorization_now = datetime.now(UTC)
+    async with async_engine.begin() as connection:
+        delivery_id = (
+            await connection.execute(
+                text(
+                    "SELECT rd.id FROM reminder_deliveries rd "
+                    "JOIN reminder_rules rr ON rr.id=rd.reminder_rule_id "
+                    "WHERE rr.note_id=:note_id"
+                ),
+                {"note_id": ghost["id"]},
+            )
+        ).scalar_one()
+        await connection.execute(
+            text(
+                "UPDATE reminder_deliveries SET state='claimed', due_at=:due_at, "
+                "claim_token=:token, claim_expires_at=:expires, result_at=NULL, "
+                "authorized_at=NULL, recipient_snapshot=NULL, content_snapshot=NULL, error_code=NULL "
+                "WHERE id=:delivery_id"
+            ),
+            {
+                "delivery_id": delivery_id,
+                "due_at": authorization_now - timedelta(seconds=1),
+                "expires": authorization_now + timedelta(seconds=30),
+                "token": token,
+            },
+        )
+        before_notifications = (
+            await connection.execute(text("SELECT count(*) FROM notifications"))
+        ).scalar_one()
+        before_outbox = (
+            await connection.execute(text("SELECT count(*) FROM outbox_events"))
+        ).scalar_one()
+    sender = FakeEmailSender()
+    assert deliver(str(delivery_id), str(token), sender) is False
+    assert sender.messages == []
+    async with async_engine.connect() as connection:
+        state = (
+            await connection.execute(
+                text("SELECT state::text FROM reminder_deliveries WHERE id=:delivery_id"),
+                {"delivery_id": delivery_id},
+            )
+        ).scalar_one()
+        assert state == "cancelled"
+        assert (
+            await connection.execute(text("SELECT count(*) FROM notifications"))
+        ).scalar_one() == before_notifications
+        assert (
+            await connection.execute(text("SELECT count(*) FROM outbox_events"))
+        ).scalar_one() == before_outbox
 
 
 async def test_split_rejects_preserved_key_collision_and_generated_historical_instants(

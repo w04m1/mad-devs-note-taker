@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import UTC, datetime, timedelta
+from threading import Event
 
 import pytest
 from sqlalchemy import func, select, text
@@ -16,6 +18,7 @@ from app.db.models import (
     OutboxEvent,
     ReminderDelivery,
     ReminderRule,
+    UserSettings,
 )
 from app.db.session import sync_session_factory
 from app.email.senders import FakeEmailSender
@@ -306,3 +309,42 @@ def test_delivery_attempt_is_at_most_once_and_timeout_is_visible_unknown() -> No
             )
             == 2
         )
+
+
+def test_recipient_authorization_serializes_with_settings_change() -> None:
+    now = datetime.now(UTC)
+    delivery_id = make_delivery(due_at=now - timedelta(seconds=1))
+    with sync_session_factory() as session, session.begin():
+        session.add(
+            UserSettings(
+                id=reminders.PROFILE_ID,
+                email="removed@example.test",
+                timezone="UTC",
+            )
+        )
+    with sync_session_factory() as session, session.begin():
+        [(_, token)] = claim_due(session, now=now, grace_seconds=60, lease_seconds=30)
+
+    sender = FakeEmailSender()
+    started = Event()
+
+    def send_after_barrier() -> bool:
+        started.set()
+        return deliver(str(delivery_id), str(token), sender)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with sync_session_factory() as session, session.begin():
+            settings = session.scalars(
+                select(UserSettings)
+                .where(UserSettings.id == reminders.PROFILE_ID)
+                .with_for_update()
+            ).one()
+            settings.email = "current@example.test"
+            session.flush()
+            future = pool.submit(send_after_barrier)
+            assert started.wait(timeout=2)
+            assert not wait([future], timeout=0.25).done
+        assert future.result(timeout=5) is True
+
+    assert [message.recipient for message in sender.messages] == ["current@example.test"]
+    assert all(message.recipient != "removed@example.test" for message in sender.messages)
