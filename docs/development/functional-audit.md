@@ -206,13 +206,26 @@ interleaving is considered fully characterized.
   retain its template. An expired predecessor must be redacted independently even
   when its successor remains live.
 
-A safe Trash contract needs immutable action identity and membership, grouped
-pagination, atomic restore by action ID, and explicit overlap/version/expiry
-conflicts. This does not require independent Upcoming pages or new canonical
-recurrence mutation routes. Erasure is decided per series segment: after its last
-visible or restorable member ages out, remove its user-authored template and
-series associations and make normal series reads/mutations return the same 404 as
-purged notes, while retaining only non-public technical lineage/collision markers.
+The only canonical Trash listing is numbered
+`GET /api/v1/trash/groups?page&page_size`. It returns
+`TrashGroupPage {items,total,page,page_size}`; `items` uses an OpenAPI
+discriminator whose variants
+are exactly `series_action`, `legacy_occurrence`, and `note`. There is no
+`GET /api/v1/trash` alias. Results have a stable deletion-time, kind-rank, UUID
+order. One action contributes one card and one unit to `total`, never its member
+count. A valid page beyond the last item returns 200 with an empty `items` array
+and unchanged `total`, `page`, and `page_size` metadata. The canonical grouped
+restore is `POST /api/v1/trash/actions/{action_id}/restore`, and its request body
+is exactly `{expected_series_version}`. An action card derives its count from
+immutable membership and derives its preview at read time from the note with the
+earliest `(recurrence_key,note_id)` member key. Action storage never contains a
+title, body, preview, count, or expiry, and display fields are never restore
+authority. This contract does not require independent Upcoming pages or new
+canonical recurrence mutation routes. Erasure is decided per series segment:
+after its last visible or restorable member ages out, remove its user-authored
+template and series associations and make normal series reads/mutations return
+the same 404 as purged notes, while retaining only non-public technical
+lineage/collision markers.
 
 ### 3. Authoritative database snapshots and concurrency
 
@@ -530,15 +543,42 @@ These are missing proof, not automatic functional failures:
 
 ### Binding storage, legacy-data, and activation contract
 
-The storage change is one activation-irreversible Alembic revision named
-`0004_storage_contract`. It runs during a planned **full writer outage**: backend,
-worker, Beat, migration bypasses, and every other database writer are stopped before
-the revision starts and remain stopped until the new application version is ready.
-There is no online-expand/contract sequence, action backfill, dual-write period, or
-mixed-version writer window.
+The storage change is one activation-irreversible Alembic revision,
+`0004_storage_contract`, whose sole parent is the unchanged `0003_background` and
+which becomes the single head. It runs during a planned **full writer outage**.
+There is no action backfill, inferred grouping, online expand/contract,
+dual-write/read, catch-up phase, or mixed-version writer window.
 
-Existing recurring-Trash state is not guessed into action groups. After `0004`, the
-exact legacy-row predicate is:
+Recurring-Trash action storage consists only of
+`recurring_trash_actions(id, series_id, boundary_recurrence_key, trashed_at,
+sealed_at)`, immutable
+`recurring_trash_action_members(action_id,note_id)`, and nullable
+`notes.current_recurring_trash_action_id`. History foreign keys are immediate
+`RESTRICT`. The current pointer has the composite foreign key
+`(current_recurring_trash_action_id,id)->(action_id,note_id)` with `ON DELETE NO
+ACTION DEFERRABLE INITIALLY DEFERRED`. The membership key permits the same
+`note_id` in more than one historical action; `note_id` is not globally unique.
+There is no action version, status, closure, restored, purged, expiry, count, or
+content field, no separate seal table or provenance field, and no stored preview.
+New actions never write `series_trashed_at`; individual Trash writes only
+`deleted_at`.
+
+`trashed_at` is database-generated. Action creation writes the header, bulk
+membership, identical `deleted_at` values plus identical current pointers on the
+exact notes, and seals last. Database triggers permit exactly one DB-generated
+`sealed_at` transition from NULL and a deferred constraint trigger requires every
+new header to be sealed at commit. They reject member insertion and pointer
+assignment after sealing, and reject UPDATE or DELETE of a sealed header or its
+members. At seal they validate a nonempty, exact bidirectional member-to-current-
+pointer set: every member and pointer matches, belongs to the header's series and
+boundary scope, has `deleted_at = trashed_at`, and is neither purged nor
+superseded. A complete current-pointer set means open; an empty set means closed;
+a partial set is an invariant breach, never an API state. Restore and purge clear
+current pointers only. Retrash creates a new header and membership history. A
+split rejects overlap with any current/restorable action or any legacy-marked row.
+
+Existing recurring-Trash state is not guessed into action groups. After `0004`,
+the exact legacy-row predicate is:
 
 ```sql
 note.series_id IS NOT NULL
@@ -552,86 +592,107 @@ AND NOT EXISTS (
 )
 ```
 
-Action identity and membership rows remain after restore or expiry, so the
-`NOT EXISTS` test stays definitive; a nullable current pointer alone is not legacy
-provenance. A row satisfying the predicate is restorable only until its unchanged
-`deleted_at + 30 days` deadline. Each match is an independent legacy restore unit,
-even when several rows have the same timestamp or series. Restore must target one
-legacy note ID, atomically clear that note's `deleted_at` and
-`series_trashed_at`, and reconcile only that occurrence's future reminders. It must
-not infer or restore a timestamp-, boundary-, or series-wide group. No migration
-creates synthetic actions or action members for these rows. Individual restore of
-a true action member instead returns stable `409 grouped_restore_required` and the
-member can be restored only through atomic restore-by-action.
+Every predicate match is one `legacy_occurrence` card; the system never
+synthesizes an action or cohort for it. Its unchanged deadline is
+`deleted_at + 30 days`. Old note restore for such a row clears only that row's
+`deleted_at` and `series_trashed_at` and reconciles only its strictly future
+reminders. Old series restore retains the deployed `recurrence_key >= boundary`
+range behavior for provenance-less legacy rows. For an action-backed note, old
+`POST /notes/{id}/restore` checks both the selected note and series OCC, then
+atomically aliases restore of the exact owning action and returns the selected old
+`NoteResponse`. It does not return `grouped_restore_required`. Old series restore
+aliases grouped restore only when its candidate set is exactly one complete
+current action. A subset, multiple actions, or mixed legacy/action candidates fail
+atomically with `409 individual_restore_required` and message `Restore each trash
+action individually.`
 
-All new recurring portion-Trash writes use a new immutable trash-action row, immutable
-one-row-per-note action membership, and a nullable current-action pointer on each
-Note. An action records the commanded series/scope and creation time. Its member
-set never changes. The Note pointer is the sole current ownership discriminator;
-restoring an action atomically affects only members whose pointer still names that
-action, then clears those pointers. Historical action and member rows are retained
-as bounded technical facts and are never repurposed. New recurring portion-trash
-code does not write `series_trashed_at`; new individual-note trash writes only
-`deleted_at`; and legacy restore does not create an action.
+Canonical action restore has no action/member/pointer token, ETag, member-version
+list, or action version. It compares `{expected_series_version}` with the locked
+series version, restores the whole action all-or-none, revalidates every sealed
+member and current pointer under lock, and reconciles strictly future reminders
+only. Its stable results are: unknown action `404 trash_action_not_found`; closed
+or repeated restore `409 nothing_to_restore`; stale series OCC `409
+version_conflict` including the current series version; expired, including exactly
+at `trashed_at + 30 days`, `410 retention_expired`; and an ambiguous old-series
+adapter
+`409 individual_restore_required`.
 
-A split is rejected atomically with a stable conflict if its affected range crosses
-any still-restorable Trash state: either a row matching the legacy predicate above
-or a row with a live current-action pointer. It must not reuse, rewrite, clear, or
-re-parent those rows. Expired or purged technical tombstones are not restorable;
-they remain subject to the separate collision, purge, and lineage rules.
+`RecurrenceSeries` gains nullable `purged_at`. Cleanup first redacts or deletes its
+templates, associations, and exception content. It may seal the series by setting
+`purged_at` last only after every note in that exact series, including superseded
+and historical rows, is purged. Database triggers make both `notes.purged_at` and
+`recurrence_series.purged_at` irreversible: after either becomes non-null, every
+UPDATE or DELETE of that parent row is rejected. Child guards reject content or
+association resurrection and reject insertion or reparenting of a note into a
+sealed series. Content-neutral correction of a delivery with the same token
+remains allowed, and the outbox lifecycle remains independent.
 
-`RecurrenceSeries` gains its own nullable `purged_at`. Once a segment has no visible
-or restorable member and retention expires, cleanup redacts its user-authored
-fields and associations, sets `purged_at`, and normal reads and mutations return the
-same 404 projection as purged notes. The marker is technical retention state, not a
-way to expose the redacted series.
+`ReminderDelivery` and `OutboxEvent` each gain exactly one
+`varchar(64) error_code`, replacing their raw error columns. The exact delivery allowlist is
+`invalid_recipient`, `smtp_send_failed`, `smtp_outcome_unknown`,
+`worker_outcome_unknown`, `delivery_failed_legacy`, and
+`delivery_outcome_unknown_legacy`; the exact outbox allowlist is
+`outbox_publish_failed` and `outbox_publish_failed_legacy`. Migration maps legacy
+values by state and error presence only, scrubs and drops all raw text, and adds
+named allowlist CHECKs plus complete delivery/outbox state-shape CHECKs. No second
+message, detail, or class field may persist exception text or sensitive context.
 
-`ReminderDelivery` and `OutboxEvent` each gain exactly one persisted `error_code`
-field whose values come from a closed, documented allowlist. Migration/activation
-maps any needed unresolved legacy failure to a non-sensitive generic legacy code
-(or null where no failure state requires a code), scrubs existing raw values, and
-drops `ReminderDelivery.error` and `OutboxEvent.last_error`. Neither table gets a
-second detail/message/class field. Application code and logs must not persist raw
-exception text, arguments, class names, URLs, provider responses, recipient or note
-content, credentials, or tokens.
+The same irreversible `0004` migration repairs the superseded ghosts described by
+FA-H-SUPERSEDED-GHOST. It sets `deleted_at = superseded_at` on restored
+superseded ghosts without changing `version` or `updated_at`. It cancels
+pending/claimed deliveries for superseded or purged notes, clears their claim
+fields, and sets their result time; attempt-started and completed history is left
+unchanged. It deletes matching non-purged superseded exceptions and normalizes
+purged exceptions to cancelled/empty. Runtime public note lookup remains exactly
+`purged_at IS NULL AND superseded_at IS NULL`, not a `deleted_at` substitute.
+Reminder creation, reconciliation, and final authorization each independently
+require an active note that is not deleted, superseded, or purged.
 
-This is an operationally one-way storage contract. Before activation, and only with
-proof that no new action/membership write committed, the operator may keep traffic
-closed, downgrade `0004`, and reinstall the old release everywhere. Rollback to an
-old writer is unsupported once write traffic is activated or the first new action
-write commits, whichever occurs first. Recovery after that point means roll forward
-or restore a pre-cutover database backup together with its matching old application
-and accept loss of later writes; it never means dropping action data or starting old
-writers against the activated schema.
+Activation is: validate the pre-cutover backup; close ingress; stop backend,
+worker, Beat, migrate/admin paths and every other writer and drain transactions;
+verify the database is exactly at `0003_background`; run the one transactional
+`0004_storage_contract`; validate its triggers, constraints, and sole head; install
+one release everywhere; run offline smoke tests; start services and pass readiness;
+then reopen ingress. `downgrade()` must fail before performing any DDL. Before
+activation, rollback means restoring the validated pre-cutover backup and matching
+old release while ingress remains closed, never downgrading destructive `0004`.
+At traffic activation or strictly the first new action commit, whichever occurs
+first, logical rollback ends. Recovery afterward is a forward fix or disaster
+recovery from that backup with explicit acceptance that later writes are lost.
 
 ### Binding database lock protocol
 
 All code paths that lock more than one mutable domain row must use this global
-order: **sorted Tags → Series → Notes → associations/templates → Rules →
-Deliveries → Settings → Notifications → Exceptions → Outbox**. Within a class,
-lock rows by ascending primary key; Tags are therefore a sorted set, never request
-order:
+order: **sorted Tags → Series → Trash Actions → Notes → associations/templates →
+Rules → Deliveries → Settings → Notifications → Exceptions → Outbox**. Within a
+class, lock rows by ascending primary key; Tags are therefore a sorted set, never
+request order, and Trash Actions are ordered by UUID:
 
 1. **Tags** (sorted)
 2. **Series** (`RecurrenceSeries`)
-3. **Notes**
-4. **associations/templates** (`NoteTag`, `SeriesTag`, and
-   `SeriesReminderTemplate`)
-5. **Rules** (`ReminderRule`)
-6. **Deliveries** (`ReminderDelivery`)
-7. **Settings** (`UserSettings`)
-8. **Notifications** (`Notification`)
-9. **Exceptions** (`OccurrenceException`)
-10. **Outbox** (`OutboxEvent`)
+3. **Trash Actions** (`recurring_trash_actions`, UUID order)
+4. **Notes**
+5. **associations/templates** (`recurring_trash_action_members`, `NoteTag`,
+   `SeriesTag`, and `SeriesReminderTemplate`)
+6. **Rules** (`ReminderRule`)
+7. **Deliveries** (`ReminderDelivery`)
+8. **Settings** (`UserSettings`)
+9. **Notifications** (`Notification`)
+10. **Exceptions** (`OccurrenceException`)
+11. **Outbox** (`OutboxEvent`)
 
 Rows that can be changed, deleted, used to authorize a side effect, or used to
 validate a mutation take `SELECT ... FOR UPDATE`; do not weaken this to `FOR NO
 KEY UPDATE` or take a lock that later needs an upgrade. A stable referenced row
 that needs only FK/existence protection may use `FOR KEY SHARE`, still in the same
 class order. Lock every already-known row in one ordered statement per class where
-practical. Association and template rows are locked after their Tag/Series/Note
-parents and before their Rule/Delivery children. A transaction must not acquire a
-row from an earlier class after it has acquired a later-class lock. Redis
+practical. Action headers are always acquired between their Series and Notes.
+Action-member, association, and template rows are acquired only after all of their
+parent Tags, Series, Trash Actions, and Notes, and before Rule/Delivery children.
+Application child writers must pre-lock and revalidate ancestors in this order.
+Parent-locking triggers are a direct-SQL integrity backstop, not a proof of
+deadlock freedom. A transaction must not acquire a row from an earlier class after
+it has acquired a later-class lock. Redis
 publication, SMTP, and other network I/O must not run while database row locks are
 held. SMTP's existing authorization/attempt
 boundary remains a separate at-most-one-attempt protocol, not permission to retry
