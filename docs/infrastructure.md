@@ -39,7 +39,10 @@ Startup is gated in this order:
 
 1. PostgreSQL, Redis, and Mailpit become healthy.
 2. The one-shot `migrate` container runs `alembic upgrade head` after PostgreSQL is healthy.
-3. Backend, worker, and Beat cannot start if migration exits nonzero. Redis also gates processes that require it.
+3. Backend, worker, and Beat each run an independent exact Alembic-head check in
+   their entrypoint. They cannot start against missing, old, ahead, or divergent
+   schema even after a direct restart or restore. Redis also gates processes that
+   require it.
 4. Frontend starts only after backend readiness succeeds.
 
 `docker compose ps -a migrate` should show exit code 0. Exactly seven other services remain running after the migration completes.
@@ -50,6 +53,8 @@ Startup is gated in this order:
 ./scripts/compose-config.sh       # parse and normalize Compose
 ./scripts/smoke.sh                # build, start, and verify the full stack
 ./scripts/test.sh                 # backend tests, optional frontend tests, frontend build
+./scripts/test-recovery.sh        # destructive failure matrix in its own disposable project
+./scripts/test-materialization.sh # repeatable 10k performance gate and retained JSON
 docker compose run --rm migrate  # apply new migrations explicitly
 docker compose logs -f --tail=200 worker
 docker compose restart backend worker beat
@@ -70,7 +75,15 @@ Create and restore a logical PostgreSQL backup:
 ./scripts/restore.sh backups/notetaker-YYYYMMDDTHHMMSSZ.sql.gz
 ```
 
-The restore script stops state-writing application processes, requires typed confirmation, loads with `ON_ERROR_STOP`, and restarts them. Keep backups outside Docker volumes. For important data, test a restored copy before relying on it.
+Both scripts resolve the effective Compose database and user, including `.env`
+overrides, and refuse a runtime/configuration mismatch. Backup writes to a private
+temporary file, verifies the dump terminator and gzip integrity, and only then
+publishes the final archive. Restore fully decompresses first, validates the SQL
+and expected Alembic head in a disposable database before stopping services, then
+loads the target with `ON_ERROR_STOP` and `--single-transaction`. Any target-load
+failure rolls back and restores exactly the services that were previously
+running. Keep backups outside Docker volumes and retain an independently tested
+copy for important data.
 
 After downtime, due reminders inside the configured 60-second grace can run. Older deadlines become missed. Application code, not Redis AOF, enforces this rule.
 
@@ -90,5 +103,10 @@ Then use `http://192.168.1.50:5173`. Do not expose Mailpit unless it is specific
 - **Migration blocks startup:** inspect `docker compose logs migrate postgres`, fix the migration, then run `docker compose up`. Never make backend processes apply migrations.
 - **Frontend returns 502 or WebSockets fail:** confirm Vite uses `VITE_PROXY_TARGET` for both `/api` and `/ws`, and inspect backend readiness.
 - **Worker is unhealthy:** `docker compose exec worker uv run --frozen celery -A app.jobs.celery_app:celery_app inspect ping` should return `pong`.
-- **Beat is unhealthy:** inspect its logs and `/tmp/celerybeat.pid`. Only one Beat service is defined; do not scale it.
+- **Beat is unhealthy:** inspect its logs and Redis. Health requires a fresh
+  `/tmp/beat-published` timestamp written only after Beat itself successfully
+  publishes; the default maximum age is 15 seconds. It intentionally becomes
+  unhealthy when Beat is suspended or the broker is unavailable and recovers
+  after a successful publication. Only one Beat service is defined; do not scale
+  it.
 - **Reset local state:** first take a backup if needed, then run `docker compose down --volumes` and start again.

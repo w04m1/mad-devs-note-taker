@@ -2,7 +2,29 @@
 
 This page separates checks run on the original documentation baseline from later committed automated evidence. A command passing proves only what that command exercises.
 
-**Audit status:** Discovery on application baseline `defa868` is frozen with unresolved release blockers. No remediation has begun. A pass does not rebut a confirmed defect outside that check's scope. See the [functional audit ledger](development/functional-audit.md).
+**Current status:** Task 1 remediation is complete and all 15 frozen release
+blockers have post-remediation evidence. The baseline findings remain preserved
+in the [functional audit ledger](development/functional-audit.md).
+
+## Post-remediation release verification (2026-09-10)
+
+| Check | Result | Boundary |
+|---|---|---|
+| `cd backend && uv run --frozen ruff check .` | Pass | Current backend source and tests. |
+| Safe backend pytest selection | 19 passed | Tests that do not require PostgreSQL, Redis, Celery, or Mailpit. |
+| `QA_COMPOSE_PROJECT_NAME=<isolated> ./scripts/test-postgres.sh` | 34 passed, 19 deselected | Fresh PostgreSQL schema cycles, irreversible cutover, legacy ghost repair, immutable Trash storage, API races, real Redis/Celery/Mailpit, and query-plan capture. No skips. |
+| `cd frontend && corepack pnpm test -- --run` | 38 passed in 14 files | Includes shared Upcoming paging, timezone pinning, exact-instant preservation, stable future-split intent, and Calendar stale-intent rejection. |
+| `cd frontend && corepack pnpm build` | Pass; 3,059 modules transformed | Production TypeScript/Vite build. The existing bundle-size warning remains nonblocking. |
+| `QA_COMPOSE_PROJECT_NAME=<isolated> ./scripts/test-recovery.sh` | Pass | Failure-injected dump/compression/write, corrupt and mid-SQL restore, target mismatch, valid atomic restore, exact schema gating, Beat suspension, and Redis loss. |
+| `QA_MATERIALIZATION_COMPOSE_PROJECT_NAME=<isolated> ./scripts/test-materialization.sh` | Pass | Three runs per case; exact counts, zero rollback residue, atomic visibility, responsive concurrent reads, and retained JSON evidence. |
+
+The performance owner gate is a median at or below 10 seconds for 10,000
+occurrences without offsets, at or below 45 seconds with all three offsets, and a
+maximum concurrent read below 2 seconds. The retained run measured 1.446 and
+9.674-second medians respectively, with a 1.136-second worst read. Every run
+materialized exactly 10,000 notes; the three-offset runs also materialized 30,000
+rules and 30,000 deliveries. The artifact is
+[`development/evidence/task1-materialization.json`](development/evidence/task1-materialization.json).
 
 ## Original baseline checks (2026-09-09)
 
@@ -61,4 +83,6 @@ The [functional audit ledger](development/functional-audit.md) records exact com
 - The historical recovery gate proves its isolated dump/replace/load primitive. It bypasses the defective public backup and restore pipelines and does not validate them.
 - The ledger's [evidence-only gaps](development/functional-audit.md#evidence-only-gaps) and [refuted findings and allowed limits](development/functional-audit.md#refuted-findings-and-allowed-limits) are authoritative for the remaining boundaries.
 
-There is no remediation build and no post-remediation verification record.
+The commands above are the post-remediation verification record. Earlier sections
+remain historical evidence and should not be interpreted as the current release
+status.

@@ -2,16 +2,22 @@
 
 ## Status and scope
 
-Discovery is **frozen** for this audit; remediation remains open. This is not a
-closure report or a remediation log, and the audited implementation is **not
-release-ready**. The audited baseline is exact revision
+Discovery is **frozen** for this audit. The audited baseline is exact revision
 `defa868561e075afcd35a6b1ddf4af1bd36dd120` (`docs: finalize verification and
 decision log index`). The findings below reconcile the requirement reviews,
 targeted source reviews, disposable PostgreSQL and Compose checks, and two-browser
 walkthroughs recorded in the root Prime Agent session log.
 
-No implementation remediation has begun. No implementation file was changed for
-this ledger. Severity is functional and operational severity for this local,
+This ledger preserves the original findings and acceptance contracts; statements
+below that call blockers “unresolved” describe that frozen baseline. As of
+2026-09-10, all 15 release blockers are closed by the post-audit implementation
+and verification recorded in [implementation status](../implementation-status.md)
+and [verification](../verification.md). No finding has been erased or silently
+reclassified. The remaining findings explicitly labelled nonblocking are still
+follow-up work.
+
+No implementation file was changed while producing the original ledger. Severity
+is functional and operational severity for this local,
 unauthenticated, single-profile application. In particular, the restore finding is
 **Critical operational data-loss risk**. It is not a remote-security Critical, and
 this audit found no remote-security Critical issue.
