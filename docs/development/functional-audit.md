@@ -49,6 +49,7 @@ into PostgreSQL evidence.
 | Generated `app.openapi()` consumed with `openapi-typescript 7.13.0` | Generation completed, but the generated page item type was `unknown[]`, confirming the non-authoritative/untyped page contract rather than a tool execution failure. |
 | Targeted ASGI/domain probes plus temporary PostgreSQL race tests | Confirmed `q="a b"` is accepted with only two non-space characters; huge page values can produce 500; date-max expansion can fail; configured cap can exceed 10,000; pseudo-zones/weak email pass validation; 100 `ß` characters can expand under casefold and fail; composed/decomposed tag names can coexist; concurrent normalized tag create produced 201 + 500 and rename produced 200 + 500. Temporary resources were removed. |
 | Deterministic isolated PostgreSQL/API purge and authorization probes | A fully trashed three-occurrence series was aged 31 days and purged: all Note rows became inaccessible, but the series row retained the exact template title/body, tag and reminder-template associations, and `GET /series/{id}` returned them with count 3. A partial-series control correctly remained readable. A separate database barrier paused authorization after its unlocked Settings read; Settings PATCH committed a new email before authorization committed, yet the later SMTP call used the removed address. Temporary resources were removed. |
+| Deterministic isolated PostgreSQL/API/worker superseded-note probe | A split left an old occurrence with both `deleted_at` and `superseded_at`, and normal note lists did not contain it. Direct `GET /notes/{id}` nevertheless returned 200. Direct restore returned 200 and cleared only `deleted_at`; a following edit returned 200 and changed the hidden row without resurrecting it in normal lists. Final reminder authorization then accepted that still-superseded row, and the injected sender observed one email containing its edited content. The row remained absent from normal lists throughout. Temporary resources were removed. |
 | Persisted-error canary probes | Fake SMTP and Redis failures containing recipient, note text, credentials, and tokens were stored verbatim in `ReminderDelivery.error` and `OutboxEvent.last_error`. Purge and maintenance did not scrub them. They were not directly serialized by the current API, but remain exposed to database access, backups, and future diagnostics. Audit rows were removed. |
 | `http://127.0.0.1:5173` plus isolated Compose browser stacks, each with two independent Chromium contexts | Confirmed core CRUD/realtime flows, the Settings stale-draft overwrite, stale future-series and Calendar-scope overwrites, duplicate create/admission windows, and recurring-trash representation/restore behavior. Audit-created product rows were cleaned through supported APIs where possible. |
 | Fresh isolated `./tests/e2e/run.sh` | All 6 Chromium scenarios passed in 36.3 seconds (81.6 seconds for the complete wrapper). Its containers, network, and volumes were removed. |
@@ -177,6 +178,25 @@ interleaving is considered fully characterized.
   can also make one member visible while leaving the rest trashed and retaining a
   hidden portion marker. These are consequences of one root defect, not separate
   severity headlines.
+- **FA-H-SUPERSEDED-GHOST · High blocker — a superseded occurrence remains
+  directly accessible and can send a ghost reminder.** A deterministic
+  PostgreSQL/API/worker probe started with a split-produced row whose `deleted_at`
+  and `superseded_at` were both set. Normal lists excluded it, but direct GET
+  returned 200. Direct restore and edit also returned 200: restore cleared only
+  `deleted_at`, edit changed the still-superseded hidden row, and neither operation
+  resurrected it in normal lists. Final reminder authorization did not check
+  `superseded_at`; it authorized the hidden row and the injected sender received one
+  email containing the edited content. The minimum public visibility predicate is
+  `purged_at IS NULL AND superseded_at IS NULL`: normal direct Note reads and
+  mutations that miss it return the same `404 not_found` as a missing/purged note.
+  Reminder authorization must independently reject a superseded note before it
+  creates recipient/content snapshots, a notification, or an SMTP attempt. The
+  acceptance test must deterministically create a superseded occurrence by split,
+  retain its ID and versions, prove direct GET/restore/edit return 404, claim its
+  otherwise-eligible delivery through the real authorization path with an injected
+  sender, and assert cancellation with no notification, outbox event, email, or
+  list resurrection. This visibility and final-authorization gate does not decide
+  the pending recurring-Trash storage or retention details.
 - **FA-H-PURGE-REDACTION · High — a fully purged series remains
   content-recoverable.** A deterministic
   real PostgreSQL/API reproduction purged every occurrence but retained exact
