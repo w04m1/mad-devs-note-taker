@@ -88,21 +88,25 @@ interleaving is considered fully characterized.
 
 ### 1. Recovery and schema gates
 
-- **Critical (operational data loss) — restore is neither failure-safe nor
+- **FA-C-RESTORE-ATOMICITY · Critical (operational data loss) — restore is
+  neither failure-safe nor
   atomic.** `scripts/restore.sh` uses `gzip -dc | psql`. A truncated archive can
   emit a destructive valid SQL prefix, fail in `gzip`, let `psql` exit 0 at clean
   EOF, restart writers, and print completion. Separately, the `--clean` plain SQL
   dump is restored without `--single-transaction`; a later detected SQL error
   leaves earlier drops/creates committed and leaves application writers stopped.
-- **High — backup can falsely succeed.** `scripts/backup.sh` uses `pg_dump | gzip`
+- **FA-H-BACKUP-INTEGRITY · High — backup can falsely succeed.**
+  `scripts/backup.sh` uses `pg_dump | gzip`
   without portable pipeline failure propagation, protected temporary output, or
   post-write validation. A failed/partial dump can be announced as a usable
   backup.
-- **High — `.env` database/user overrides are not the script target.** Compose
+- **FA-H-DB-TARGET · High — `.env` database/user overrides are not the script
+  target.** Compose
   interpolates `.env`, but unexported shell expansions in both scripts fall back
   to `notetaker`. The scripts can fail while reporting success, stop services, or
   act on a different default-named database.
-- **High — migration checks are bypassed on restart and restore.** Compose
+- **FA-H-MIGRATION-GATE · High — migration checks are bypassed on restart and
+  restore.** Compose
   `depends_on: migrate: condition: service_completed_successfully` is creation
   ordering, not a per-start gate. `docker compose restart` does not rerun migrate;
   restore starts writers directly; readiness checks only `SELECT 1`; and
@@ -112,7 +116,8 @@ interleaving is considered fully characterized.
 
 ### 2. Recurring Trash persistence and API projection
 
-- **High — recurring Trash has no durable action/membership identity.** The
+- **FA-H-TRASH-IDENTITY · High — recurring Trash has no durable
+  action/membership identity.** The
   backend stores only mutable `series_trashed_at`, returns 204, and exposes a flat
   note page with no deletion discriminator. Two actions cannot be represented or
   restored independently. A split can reuse trashed rows, overwrite their saved
@@ -120,7 +125,8 @@ interleaving is considered fully characterized.
   can also make one member visible while leaving the rest trashed and retaining a
   hidden portion marker. These are consequences of one root defect, not separate
   severity headlines.
-- **High — a fully purged series remains content-recoverable.** A deterministic
+- **FA-H-PURGE-REDACTION · High — a fully purged series remains
+  content-recoverable.** A deterministic
   real PostgreSQL/API reproduction purged every occurrence but retained exact
   `RecurrenceSeries.template_title`/`template_body`, `SeriesTag`, and
   `SeriesReminderTemplate` data. `GET /series/{id}` returned 200 with those values
@@ -168,7 +174,8 @@ purged notes, while retaining only non-public technical lineage/collision marker
 
 ### 4. Reminder, outbox, retention, and worker lifecycle
 
-- **High — old reminder rows can make an eligible reminder become missed.** With
+- **FA-H-REMINDER-BACKLOG · High — old reminder rows can make an eligible
+  reminder become missed.** With
   101 old pending rows ahead of a row due exactly at `now - 60s`, the first
   100-row scan marked old rows missed but did not reach the cutoff row. One second
   later that row was 61 seconds old and was marked missed without enqueue. A drain
@@ -178,13 +185,15 @@ purged notes, while retaining only non-public technical lineage/collision marker
   hourly call purges one batch of 100. With 205 eligible and one recent note, one
   actual call purged 100 and left 105 eligible; a 10,000-row portion could take
   roughly 100 runs.
-- **High — reminder authorization can send content to an obsolete email.**
+- **FA-H-RECIPIENT-AUTH · High — reminder authorization can send content to an
+  obsolete email.**
   Authorization reads Settings without a lock. A deterministic barrier let PATCH
   commit a replacement email before authorization committed, then the worker sent
   the note content to the removed address. The send cannot be recalled. Recipient
   authorization must serialize with Settings changes in the documented lock
   order; this is a local privacy/integrity defect, not a remote-auth exploit.
-- **High — persisted raw failure text can retain secrets indefinitely.** SMTP and
+- **FA-H-ERROR-SECRETS · High — persisted raw failure text can retain secrets
+  indefinitely.** SMTP and
   Redis exception strings are copied, merely truncated to 4,000 characters, into
   `ReminderDelivery.error` and `OutboxEvent.last_error`. Canary tests retained
   recipient, note text, credentials, and tokens through purge/maintenance. Replace
@@ -216,7 +225,8 @@ behaviors are not defects.
 
 ### 5. Realtime delivery and reconciliation
 
-- **High — realtime lacks reliable degraded/startup resynchronization.** Open
+- **FA-H-REALTIME-RESYNC · High — realtime lacks reliable degraded/startup
+  resynchronization.** Open
   sockets can remain silently stale during Redis outage; late joiners receive no
   initial degraded signal; startup can accept a socket before subscription; and
   focus/readiness does not force an authoritative refetch of fresh-but-wrong
@@ -278,7 +288,8 @@ entry into and recovery from degraded/live epochs, not the absence of replay.
   than 50 records in any group are unreachable. The correction is one shared
   pager sized from the maximum group total. Do not add independent group pages,
   cursors, or sibling Upcoming endpoints.
-- **High — delayed or changed Settings can alter authored instants.** Note and
+- **FA-H-TIMEZONE-RACE · High — delayed or changed Settings can alter authored
+  instants.** Note and
   Upcoming interactions are enabled before profile settings resolve. A form can
   initialize wall time in the browser/old zone and submit it using a later profile
   zone. Open drafts do not pin the authoring zone. Existing-note save also rebuilds
@@ -330,7 +341,8 @@ entry into and recovery from degraded/live epochs, not the absence of replay.
 
 ### 9. Operations and accessibility
 
-- **High operational — Beat health is a PID-liveness false positive.** The current
+- **FA-H-BEAT-HEALTH · High operational — Beat health is a PID-liveness false
+  positive.** The current
   check only tests that a nonempty PID file names an existing process. It stayed
   healthy while the scheduler process was stopped and while Redis publish attempts
   blocked or failed, so it has no finite failure-detection bound for either wedge.
@@ -437,6 +449,74 @@ These are missing proof, not automatic functional failures:
   response is promised.
 
 ## Contract decisions
+
+### Binding database lock protocol
+
+All code paths that lock more than one mutable domain row must use this global
+order: **sorted Tags → Series → Notes → associations/templates → Rules →
+Deliveries → Settings → Notifications → Exceptions → Outbox**. Within a class,
+lock rows by ascending primary key; Tags are therefore a sorted set, never request
+order:
+
+1. **Tags** (sorted)
+2. **Series** (`RecurrenceSeries`)
+3. **Notes**
+4. **associations/templates** (`NoteTag`, `SeriesTag`, and
+   `SeriesReminderTemplate`)
+5. **Rules** (`ReminderRule`)
+6. **Deliveries** (`ReminderDelivery`)
+7. **Settings** (`UserSettings`)
+8. **Notifications** (`Notification`)
+9. **Exceptions** (`OccurrenceException`)
+10. **Outbox** (`OutboxEvent`)
+
+Rows that can be changed, deleted, used to authorize a side effect, or used to
+validate a mutation take `SELECT ... FOR UPDATE`; do not weaken this to `FOR NO
+KEY UPDATE` or take a lock that later needs an upgrade. A stable referenced row
+that needs only FK/existence protection may use `FOR KEY SHARE`, still in the same
+class order. Lock every already-known row in one ordered statement per class where
+practical. Association and template rows are locked after their Tag/Series/Note
+parents and before their Rule/Delivery children. A transaction must not acquire a row from an earlier class after it has
+acquired a later-class lock. Redis publication, SMTP, and other network I/O must
+not run while database row locks are held. SMTP's existing authorization/attempt
+boundary remains a separate at-most-one-attempt protocol, not permission to retry
+a send.
+
+After all required locks are held, reselect or explicitly refresh every object
+that was loaded before locking, then revalidate expected versions, current
+membership, trash/purge visibility, lineage, Settings authorization, and other
+preconditions against that locked snapshot. An unlocked preload or ORM identity-map
+value is never authoritative. A failed check rolls back the whole transaction and
+returns the documented domain `409`/`404`/`422`; it must not partially mutate.
+Deadlock or serialization failures may retry the complete database-only operation
+from a fresh session with bounded attempts and jitter. Exhaustion returns a stable
+conflict/service error. Never retry a transaction after an external side effect
+might have happened.
+
+The only protocol exceptions are:
+
+- read-only projections may use one SQL statement or an explicit coherent read
+  snapshot without `FOR UPDATE`;
+- queue consumers may claim same-class rows with ordered `FOR UPDATE SKIP LOCKED`,
+  but after that claim they may acquire only later classes; and
+- a row that does not exist cannot be row-locked. Singleton creation and unique
+  names therefore use the database uniqueness constraint (or a documented
+  transaction-scoped advisory lock), then reselect in the normal order. Expected
+  uniqueness/FK races must be translated to a stable domain response or retried;
+  they must not escape as a 500.
+
+The lock protocol needs deterministic PostgreSQL regression tests, not
+sleep-dependent race tests. Use two independent sessions plus explicit barriers or
+test-only hooks to pause after each acquired class. Cover each operation pair that
+can touch the same rows, including tag rename/delete versus note or series writes,
+note edit versus split, split versus split/restore, grouped restore versus cleanup,
+Settings PATCH versus reminder authorization, rule/delivery maintenance, and
+notification/exception/outbox creation. Assert the second operation blocks at the
+expected class, both runs finish within a statement timeout, and the result is an
+authoritative success or stable domain conflict with no deadlock, 500, torn
+projection, duplicate side effect, or partial commit. Add a forced
+deadlock/serialization test for bounded whole-transaction retry and a forced retry
+exhaustion test; assert no SMTP or Redis call is repeated.
 
 The recurrence-authority decision is resolved for local v1: add one
 side-effect-free, backend-authoritative preview endpoint that accepts naive
