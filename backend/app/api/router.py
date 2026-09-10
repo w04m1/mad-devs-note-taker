@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Query, Response, status
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete, exists, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import ApiError
@@ -17,6 +17,8 @@ from app.api.schemas import (
     NoteUpdate,
     NotificationResponse,
     Page,
+    RecurrencePreviewRequest,
+    RecurrencePreviewResponse,
     RestoreRequest,
     SeriesCreate,
     SeriesPortionRequest,
@@ -27,6 +29,11 @@ from app.api.schemas import (
     TagCreate,
     TagResponse,
     TagUpdate,
+    TrashActionRestoreRequest,
+    TrashGroupPage,
+    TrashLegacyOccurrence,
+    TrashNote,
+    TrashSeriesAction,
     UpcomingResponse,
 )
 from app.config import Settings, get_settings
@@ -36,6 +43,8 @@ from app.db.models import (
     Notification,
     OccurrenceException,
     RecurrenceSeries,
+    RecurringTrashAction,
+    RecurringTrashActionMember,
     ReminderRule,
     SeriesReminderTemplate,
     SeriesTag,
@@ -370,6 +379,25 @@ async def restore_note(
     note_id: uuid.UUID, payload: RestoreRequest, session: SessionDep
 ) -> NoteResponse:
     async with session.begin():
+        candidate = await require_note(session, note_id)
+        if candidate.current_recurring_trash_action_id is not None:
+            if payload.expected_series_version is None:
+                raise ApiError(
+                    422,
+                    "validation_error",
+                    "Recurring note restore requires expected_series_version",
+                    field_errors={"expected_series_version": "required"},
+                )
+            await _restore_trash_action(
+                session,
+                candidate.current_recurring_trash_action_id,
+                payload.expected_series_version,
+                selected_note_id=note_id,
+                expected_note_version=payload.expected_version,
+            )
+            note = await require_note(session, note_id, lock=True)
+            await session.flush()
+            return await note_response(session, note)
         note = await _locked_note_and_series(session, note_id, payload.expected_series_version)
         await check_note_version(session, note, payload.expected_version)
         if note.deleted_at is None:
@@ -636,12 +664,122 @@ async def notifications(
     return Page(items=items, total=total, page=page, page_size=page_size)
 
 
+@router.get("/trash/groups", response_model=TrashGroupPage)
+async def list_trash_groups(
+    session: SessionDep,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+) -> TrashGroupPage:
+    member_history = select(RecurringTrashActionMember.note_id).where(
+        RecurringTrashActionMember.note_id == Note.id
+    )
+    actions = list(
+        (
+            await session.execute(
+                select(RecurringTrashAction)
+                .where(
+                    RecurringTrashAction.sealed_at.is_not(None),
+                    exists(
+                        select(RecurringTrashActionMember.note_id)
+                        .join(Note, Note.id == RecurringTrashActionMember.note_id)
+                        .where(
+                            RecurringTrashActionMember.action_id == RecurringTrashAction.id,
+                            Note.current_recurring_trash_action_id == RecurringTrashAction.id,
+                        )
+                    ),
+                )
+                .order_by(RecurringTrashAction.id)
+            )
+        ).scalars()
+    )
+    legacy = list(
+        (
+            await session.execute(
+                select(Note).where(
+                    Note.series_id.is_not(None),
+                    Note.deleted_at.is_not(None),
+                    Note.series_trashed_at.is_not(None),
+                    Note.superseded_at.is_(None),
+                    Note.purged_at.is_(None),
+                    ~exists(member_history),
+                )
+            )
+        ).scalars()
+    )
+    ordinary = list(
+        (
+            await session.execute(
+                select(Note).where(
+                    Note.deleted_at.is_not(None),
+                    Note.superseded_at.is_(None),
+                    Note.purged_at.is_(None),
+                    Note.current_recurring_trash_action_id.is_(None),
+                    or_(
+                        Note.series_id.is_(None),
+                        Note.series_trashed_at.is_(None),
+                        exists(member_history),
+                    ),
+                )
+            )
+        ).scalars()
+    )
+    rows: list[tuple[datetime, int, str, object]] = []
+    rows.extend((action.trashed_at, 0, str(action.id), action) for action in actions)
+    rows.extend((note.deleted_at, 1, str(note.id), note) for note in legacy)
+    rows.extend((note.deleted_at, 2, str(note.id), note) for note in ordinary)
+    rows.sort(key=lambda item: (-item[0].timestamp(), item[1], item[2]))
+    total = len(rows)
+    selected_rows = rows[(page - 1) * page_size : page * page_size]
+    items = []
+    for _, kind_rank, _, row in selected_rows:
+        if kind_rank == 0:
+            action = row
+            members = list(
+                (
+                    await session.execute(
+                        select(Note)
+                        .join(
+                            RecurringTrashActionMember,
+                            RecurringTrashActionMember.note_id == Note.id,
+                        )
+                        .where(RecurringTrashActionMember.action_id == action.id)
+                        .order_by(Note.recurrence_key, Note.id)
+                    )
+                ).scalars()
+            )
+            items.append(
+                TrashSeriesAction(
+                    action_id=action.id,
+                    series_id=action.series_id,
+                    boundary_recurrence_key=action.boundary_recurrence_key,
+                    trashed_at=action.trashed_at,
+                    count=len(members),
+                    preview=await note_response(session, members[0]),
+                )
+            )
+        elif kind_rank == 1:
+            note = row
+            items.append(
+                TrashLegacyOccurrence(
+                    note=await note_response(session, note), trashed_at=note.deleted_at
+                )
+            )
+        else:
+            note = row
+            items.append(
+                TrashNote(note=await note_response(session, note), trashed_at=note.deleted_at)
+            )
+    return TrashGroupPage(items=items, total=total, page=page, page_size=page_size)
+
+
 async def _locked_series(
     session: AsyncSession, series_id: uuid.UUID, expected: int | None = None
 ) -> RecurrenceSeries:
     row = (
         await session.execute(
-            select(RecurrenceSeries).where(RecurrenceSeries.id == series_id).with_for_update()
+            select(RecurrenceSeries)
+            .where(RecurrenceSeries.id == series_id, RecurrenceSeries.purged_at.is_(None))
+            .with_for_update()
         )
     ).scalar_one_or_none()
     if row is None:
@@ -672,7 +810,15 @@ async def create_series(
 
 @router.get("/series/{series_id}", response_model=SeriesResponse)
 async def get_series(series_id: uuid.UUID, session: SessionDep) -> SeriesResponse:
-    series = await _locked_series(session, series_id)
+    series = (
+        await session.execute(
+            select(RecurrenceSeries).where(
+                RecurrenceSeries.id == series_id, RecurrenceSeries.purged_at.is_(None)
+            )
+        )
+    ).scalar_one_or_none()
+    if series is None:
+        raise ApiError(404, "not_found", "Recurrence series not found")
     return SeriesResponse.model_validate(await series_response_data(session, series))
 
 
@@ -705,7 +851,7 @@ async def split_series(
                     "successor_id": str(successor_id) if successor_id is not None else None,
                 },
             )
-        if old.version != payload.expected_version:
+        if old.version != payload.series_version:
             raise ApiError(
                 409,
                 "version_conflict",
@@ -747,6 +893,16 @@ async def split_series(
                 )
             ).scalars()
         )
+        if any(
+            note.current_recurring_trash_action_id is not None
+            or note.series_trashed_at is not None
+            for note in affected
+        ):
+            raise ApiError(
+                409,
+                "trash_action_overlap",
+                "Restore the affected Trash entries before splitting the series",
+            )
         now = utcnow()
         historical = [note for note in affected if note.starts_at <= now]
         if historical:
@@ -762,7 +918,7 @@ async def split_series(
                 payload.timezone,
                 payload.frequency,
                 payload.end_date,
-                limit=settings.max_series_occurrences,
+                limit=min(settings.max_series_occurrences, 10_000),
             )
         except (ValueError, OverflowError) as exc:
             raise ApiError(
@@ -888,6 +1044,8 @@ async def split_series(
             )
         for note in affected:
             if note.id not in kept:
+                if note.purged_at is not None:
+                    continue
                 note.deleted_at = now
                 note.superseded_at = now
                 note.updated_at = now
@@ -951,33 +1109,171 @@ async def trash_series_portion(
     series_id: uuid.UUID, payload: SeriesPortionRequest, session: SessionDep
 ) -> Response:
     async with session.begin():
-        series = await _locked_series(session, series_id, payload.expected_version)
+        series = await _locked_series(session, series_id, payload.series_version)
         boundary = await _portion_boundary(session, series, payload.recurrence_key)
+        candidate_ids = list(
+            (
+                await session.execute(
+                    select(Note.id).where(
+                        Note.series_id == series.id,
+                        Note.recurrence_key >= boundary,
+                        Note.deleted_at.is_(None),
+                        Note.superseded_at.is_(None),
+                        Note.purged_at.is_(None),
+                    )
+                )
+            ).scalars()
+        )
+        if not candidate_ids:
+            raise ApiError(409, "empty_series", "The series portion is empty")
+        action = RecurringTrashAction(
+            series_id=series.id, boundary_recurrence_key=boundary
+        )
+        session.add(action)
+        await session.flush()
         notes = list(
             (
                 await session.execute(
                     select(Note)
                     .where(
-                        Note.series_id == series.id,
-                        Note.recurrence_key >= boundary,
+                        Note.id.in_(candidate_ids),
+                        Note.deleted_at.is_(None),
                         Note.superseded_at.is_(None),
+                        Note.purged_at.is_(None),
                     )
                     .order_by(Note.id)
                     .with_for_update()
                 )
             ).scalars()
         )
-        now = utcnow()
+        if len(notes) != len(candidate_ids):
+            raise ApiError(409, "version_conflict", "The series portion changed")
+        session.add_all(
+            RecurringTrashActionMember(action_id=action.id, note_id=note.id) for note in notes
+        )
+        await session.flush()
+        now = action.trashed_at
         for note in notes:
-            if note.deleted_at is None:
-                note.deleted_at = note.series_trashed_at = now
-                note.updated_at = now
-                offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
-                await reconcile_reminders(session, note, offsets, schedule_changed=False, now=now)
+            note.deleted_at = now
+            note.current_recurring_trash_action_id = action.id
+            note.updated_at = now
+            offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
+            await reconcile_reminders(session, note, offsets, schedule_changed=False, now=now)
         series.updated_at = now
         await session.flush()
+        await session.execute(
+            update(RecurringTrashAction)
+            .where(RecurringTrashAction.id == action.id)
+            .values(sealed_at=func.clock_timestamp())
+        )
         add_event(session, "series.updated", series.id, series.version, series_id=series.id)
     return Response(status_code=204)
+
+
+async def _restore_trash_action(
+    session: AsyncSession,
+    action_id: uuid.UUID,
+    expected_series_version: int,
+    *,
+    selected_note_id: uuid.UUID | None = None,
+    expected_note_version: int | None = None,
+) -> RecurrenceSeries:
+    identity = (
+        await session.execute(
+            select(RecurringTrashAction.series_id).where(RecurringTrashAction.id == action_id)
+        )
+    ).scalar_one_or_none()
+    if identity is None:
+        raise ApiError(404, "trash_action_not_found", "Trash action not found")
+    series = await _locked_series(session, identity, expected_series_version)
+    action = (
+        await session.execute(
+            select(RecurringTrashAction)
+            .where(RecurringTrashAction.id == action_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one()
+    member_ids = list(
+        (
+            await session.execute(
+                select(RecurringTrashActionMember.note_id)
+                .where(RecurringTrashActionMember.action_id == action.id)
+                .order_by(RecurringTrashActionMember.note_id)
+            )
+        ).scalars()
+    )
+    notes = list(
+        (
+            await session.execute(
+                select(Note).where(Note.id.in_(member_ids)).order_by(Note.id).with_for_update()
+            )
+        ).scalars()
+    )
+    await session.execute(
+        select(RecurringTrashActionMember)
+        .where(RecurringTrashActionMember.action_id == action.id)
+        .order_by(RecurringTrashActionMember.note_id)
+        .with_for_update()
+    )
+    current = [note for note in notes if note.current_recurring_trash_action_id == action.id]
+    if not current:
+        raise ApiError(409, "nothing_to_restore", "Trash action is already closed")
+    if len(current) != len(notes):
+        raise ApiError(409, "trash_invariant_breach", "Trash action membership is incomplete")
+    if selected_note_id is not None:
+        selected_note = next((note for note in notes if note.id == selected_note_id), None)
+        if selected_note is None:
+            raise ApiError(404, "not_found", "Note not found")
+        await check_note_version(session, selected_note, expected_note_version)  # type: ignore[arg-type]
+    now = utcnow()
+    if action.trashed_at <= now - timedelta(days=30):
+        raise ApiError(410, "retention_expired", "The trash action can no longer be restored")
+    for note in notes:
+        note.current_recurring_trash_action_id = None
+        note.deleted_at = None
+        note.updated_at = now
+        offsets = list((await session.execute(select_reminder_offsets(note.id))).scalars())
+        await reconcile_reminders(
+            session, note, offsets, schedule_changed=False, now=now, future_only=True
+        )
+    series.updated_at = now
+    await session.flush()
+    add_event(session, "series.updated", series.id, series.version, series_id=series.id)
+    return series
+
+
+@router.post("/trash/actions/{action_id}/restore", response_model=SeriesResponse)
+async def restore_trash_action(
+    action_id: uuid.UUID, payload: TrashActionRestoreRequest, session: SessionDep
+) -> SeriesResponse:
+    async with session.begin():
+        series = await _restore_trash_action(
+            session, action_id, payload.expected_series_version
+        )
+        await session.flush()
+        return SeriesResponse.model_validate(await series_response_data(session, series))
+
+
+@router.post("/series/preview", response_model=RecurrencePreviewResponse)
+async def preview_series(
+    payload: RecurrencePreviewRequest, settings: SettingsDep
+) -> RecurrencePreviewResponse:
+    try:
+        occurrences = expand_occurrences(
+            payload.local_start,
+            payload.timezone,
+            payload.frequency,
+            payload.end_date,
+            limit=min(settings.max_series_occurrences, 10_000),
+        )
+    except (ValueError, OverflowError) as exc:
+        raise ApiError(422, "invalid_recurrence", "Invalid recurrence") from exc
+    if not occurrences:
+        raise ApiError(422, "invalid_recurrence", "Series has no valid occurrences")
+    return RecurrencePreviewResponse(
+        starts_at=occurrences[0].instant, occurrence_count=len(occurrences)
+    )
 
 
 @router.post("/series/{series_id}/restore", response_model=SeriesResponse)
@@ -985,7 +1281,56 @@ async def restore_series_portion(
     series_id: uuid.UUID, payload: SeriesPortionRequest, session: SessionDep
 ) -> SeriesResponse:
     async with session.begin():
-        series = await _locked_series(session, series_id, payload.expected_version)
+        series = await _locked_series(session, series_id, payload.series_version)
+        action_conditions = [
+            Note.series_id == series.id,
+            Note.current_recurring_trash_action_id.is_not(None),
+        ]
+        legacy_conditions = [
+            Note.series_id == series.id,
+            Note.series_trashed_at.is_not(None),
+            Note.current_recurring_trash_action_id.is_(None),
+            Note.deleted_at.is_not(None),
+            Note.superseded_at.is_(None),
+            Note.purged_at.is_(None),
+        ]
+        if payload.recurrence_key is not None:
+            action_conditions.append(Note.recurrence_key >= payload.recurrence_key)
+            legacy_conditions.append(Note.recurrence_key >= payload.recurrence_key)
+        action_ids = list(
+            (
+                await session.execute(
+                    select(Note.current_recurring_trash_action_id)
+                    .where(*action_conditions)
+                    .distinct()
+                    .order_by(Note.current_recurring_trash_action_id)
+                )
+            ).scalars()
+        )
+        has_legacy = (await session.execute(select(Note.id).where(*legacy_conditions).limit(1))).first()
+        if action_ids:
+            if len(action_ids) != 1 or has_legacy is not None:
+                raise ApiError(
+                    409,
+                    "individual_restore_required",
+                    "Restore each trash action individually.",
+                )
+            action_boundary = (
+                await session.execute(
+                    select(RecurringTrashAction.boundary_recurrence_key).where(
+                        RecurringTrashAction.id == action_ids[0]
+                    )
+                )
+            ).scalar_one()
+            if payload.recurrence_key is not None and payload.recurrence_key != action_boundary:
+                raise ApiError(
+                    409,
+                    "individual_restore_required",
+                    "Restore each trash action individually.",
+                )
+            series = await _restore_trash_action(session, action_ids[0], payload.series_version)
+            await session.flush()
+            return SeriesResponse.model_validate(await series_response_data(session, series))
         boundary = await _portion_boundary(session, series, payload.recurrence_key, restoring=True)
         notes = list(
             (

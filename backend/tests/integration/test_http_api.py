@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import text
 
+from app.api import router as api_router
 from app.config import Settings, get_settings
 from app.db.session import async_engine, sync_session_factory
 from app.jobs.maintenance import purge_trash
@@ -183,6 +184,47 @@ async def test_views_and_calendar_range_guard(client: httpx.AsyncClient) -> None
     assert view["past"]["total"] == 1
     assert view["today"]["total"] >= 1
     assert view["server_now"].endswith("Z")
+
+
+async def test_upcoming_shared_pager_reaches_every_group_boundary(
+    client: httpx.AsyncClient, monkeypatch
+) -> None:
+    now = datetime(2026, 1, 5, 10, tzinfo=UTC)
+    monkeypatch.setattr(api_router, "utcnow", lambda: now)
+    async with async_engine.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                INSERT INTO notes
+                    (id, title, body, starts_at, active, version, created_at, updated_at)
+                SELECT md5(kind || '-' || g)::uuid, kind || '-' || g, '',
+                       CASE kind
+                         WHEN 'past' THEN CAST(:now AS timestamptz) - interval '2 hours' + g * interval '1 second'
+                         WHEN 'today' THEN CAST(:now AS timestamptz) + interval '1 hour' + g * interval '1 second'
+                         ELSE CAST(:now AS timestamptz) + interval '2 days' + g * interval '1 second'
+                       END,
+                       true, 1, :now, :now
+                FROM unnest(ARRAY['past', 'today', 'week']) AS categories(kind)
+                CROSS JOIN generate_series(1, 51) AS g
+                """
+            ),
+            {"now": now},
+        )
+    first = (await client.get("/api/v1/upcoming", params={"page": 1, "page_size": 50})).json()
+    second = (await client.get("/api/v1/upcoming", params={"page": 2, "page_size": 50})).json()
+    third = (await client.get("/api/v1/upcoming", params={"page": 3, "page_size": 50})).json()
+    for group in ("today", "week", "past"):
+        assert (first[group]["total"], second[group]["total"], third[group]["total"]) == (
+            51,
+            51,
+            51,
+        )
+        assert len(first[group]["items"]) == 50
+        assert len(second[group]["items"]) == 1
+        assert third[group]["items"] == []
+        assert first[group]["page"] == 1
+        assert second[group]["page"] == 2
+        assert third[group]["page"] == 3
 
 
 async def test_readding_removed_offset_starts_new_delivery_cycle(client: httpx.AsyncClient) -> None:
@@ -405,7 +447,12 @@ async def test_series_split_replaces_future_exceptions_and_portion_trash_restore
 
 
 def _series_payload(
-    first: datetime, *, title: str = "Contract series", tag_ids=None, reminders=None
+    first: datetime,
+    *,
+    title: str = "Contract series",
+    tag_ids=None,
+    reminders=None,
+    end_days: int = 2,
 ):
     return {
         "title": title,
@@ -417,7 +464,7 @@ def _series_payload(
         "local_start": first.replace(tzinfo=None).isoformat(),
         "timezone": "UTC",
         "frequency": "daily",
-        "end_date": (first.date() + timedelta(days=2)).isoformat(),
+        "end_date": (first.date() + timedelta(days=end_days)).isoformat(),
     }
 
 
@@ -456,7 +503,7 @@ async def test_configured_series_limit_applies_to_create_and_split(
     assert unchanged["occurrence_count"] == 3
 
 
-async def test_split_replaces_future_series_trash_and_keeps_unchanged_cycles(
+async def test_split_rejects_overlap_with_immutable_trash_action(
     client: httpx.AsyncClient,
 ) -> None:
     first = (datetime.now(UTC) + timedelta(days=80)).replace(microsecond=0)
@@ -480,27 +527,118 @@ async def test_split_replaces_future_series_trash_and_keeps_unchanged_cycles(
         "expected_occurrence_version": notes[1]["version"] + 1,
     }
     split = await client.post(f"/api/v1/series/{series['id']}/split", json=split_payload)
-    assert split.status_code == 200, split.text
-    successor = split.json()
+    assert split.status_code == 409, split.text
+    assert split.json()["code"] == "trash_action_overlap"
+    groups = (await client.get("/api/v1/trash/groups", params={"page_size": 100})).json()
+    assert groups["total"] == 1
+    assert groups["items"][0]["kind"] == "series_action"
+    assert groups["items"][0]["count"] == 2
+
+
+async def test_two_recurring_trash_actions_are_stable_and_restore_independently(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=85)).replace(microsecond=0)
+    series = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    notes = sorted(
+        (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"],
+        key=lambda note: note["recurrence_key"],
+    )
+    assert (
+        await client.post(
+            f"/api/v1/series/{series['id']}/trash",
+            json={
+                "expected_series_version": series["version"],
+                "recurrence_key": notes[2]["recurrence_key"],
+            },
+        )
+    ).status_code == 204
+    assert (
+        await client.post(
+            f"/api/v1/series/{series['id']}/trash",
+            json={
+                "expected_series_version": series["version"] + 1,
+                "recurrence_key": notes[0]["recurrence_key"],
+            },
+        )
+    ).status_code == 204
+
+    groups = (await client.get("/api/v1/trash/groups", params={"page_size": 1})).json()
+    next_page = (
+        await client.get("/api/v1/trash/groups", params={"page": 2, "page_size": 1})
+    ).json()
+    empty_page = (
+        await client.get("/api/v1/trash/groups", params={"page": 3, "page_size": 1})
+    ).json()
+    cards = groups["items"] + next_page["items"]
+    assert groups["total"] == next_page["total"] == empty_page["total"] == 2
+    assert empty_page["items"] == []
+    assert {card["count"] for card in cards} == {1, 2}
+    assert {card["preview"]["id"] for card in cards} == {notes[0]["id"], notes[2]["id"]}
+
+    ambiguous_alias = await client.post(
+        f"/api/v1/series/{series['id']}/restore",
+        json={"expected_series_version": series["version"] + 2},
+    )
+    assert ambiguous_alias.status_code == 409
+    one_member = next(card for card in cards if card["count"] == 1)
+    restored = await client.post(
+        f"/api/v1/trash/actions/{one_member['action_id']}/restore",
+        json={"expected_series_version": series["version"] + 2},
+    )
+    assert restored.status_code == 200, restored.text
+    remaining = (await client.get("/api/v1/trash/groups")).json()
+    assert remaining["total"] == 1
+    assert remaining["items"][0]["count"] == 2
+
+    selected = remaining["items"][0]["preview"]
+    alias_restore = await client.post(
+        f"/api/v1/notes/{selected['id']}/restore",
+        json={
+            "expected_version": selected["version"],
+            "expected_series_version": restored.json()["version"],
+        },
+    )
+    assert alias_restore.status_code == 200, alias_restore.text
     visible = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
-    replacement = [n for n in visible if n["series_id"] == successor["id"]]
-    replacement_ids = {n["id"] for n in replacement}
-    assert {notes[1]["id"], notes[2]["id"]} <= replacement_ids
-    assert len(replacement_ids) == 3
+    assert {note["id"] for note in visible} == {note["id"] for note in notes}
+    assert (await client.get("/api/v1/trash/groups")).json()["total"] == 0
+
+
+async def test_cleanup_never_partly_purges_action_larger_than_batch(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=86)).replace(microsecond=0)
+    series = (await client.post("/api/v1/series", json=_series_payload(first, end_days=100))).json()
+    trashed = await client.post(
+        f"/api/v1/series/{series['id']}/trash",
+        json={"expected_series_version": series["version"]},
+    )
+    assert trashed.status_code == 204, trashed.text
+    purge_now = datetime.now(UTC).replace(microsecond=0)
+    async with async_engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE notes SET deleted_at=:cutoff "
+                "WHERE current_recurring_trash_action_id IS NOT NULL"
+            ),
+            {"cutoff": purge_now - timedelta(days=30)},
+        )
+    with sync_session_factory() as session, session.begin():
+        assert purge_trash(session, now=purge_now, limit=100) == 101
     async with async_engine.connect() as connection:
-        cycles = (
+        purged, current = (
             await connection.execute(
-                text("""
-            SELECT n.id::text, rr.current_cycle_number, rd.state::text
-            FROM notes n JOIN reminder_rules rr ON rr.note_id=n.id
-            JOIN reminder_deliveries rd ON rd.reminder_rule_id=rr.id
-              AND rd.cycle_number=rr.current_cycle_number
-            WHERE n.series_id=:series_id ORDER BY n.recurrence_key
-        """),
-                {"series_id": successor["id"]},
+                text(
+                    "SELECT count(*) FILTER (WHERE purged_at IS NOT NULL), "
+                    "count(*) FILTER (WHERE current_recurring_trash_action_id IS NOT NULL) "
+                    "FROM notes WHERE series_id=:series_id"
+                ),
+                {"series_id": series["id"]},
             )
-        ).all()
-    assert [(cycle, state) for _, cycle, state in cycles] == [(1, "pending")] * 3
+        ).one()
+    assert (purged, current) == (101, 0)
+    assert (await client.get(f"/api/v1/series/{series['id']}")).status_code == 404
 
 
 async def test_series_restore_does_not_revive_overlapping_individual_cancellation(
@@ -950,7 +1088,9 @@ async def test_split_preserves_purged_tombstone_and_materializes_accessible_repl
                 },
             )
         ).one()
-    assert stored == (True, True, "[purged]", series["id"])
+    # Purged rows are immutable; the later split leaves this technical tombstone
+    # on its original segment rather than adding a superseded marker.
+    assert stored == (True, False, "[purged]", series["id"])
     assert marker == (True, {})
 
 

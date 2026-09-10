@@ -72,9 +72,11 @@ async def note_response(session: AsyncSession, note: Note) -> NoteResponse:
 
 
 async def require_note(session: AsyncSession, note_id: uuid.UUID, *, lock: bool = False) -> Note:
-    stmt = select(Note).where(Note.id == note_id, Note.purged_at.is_(None))
+    stmt = select(Note).where(
+        Note.id == note_id, Note.purged_at.is_(None), Note.superseded_at.is_(None)
+    )
     if lock:
-        stmt = stmt.with_for_update()
+        stmt = stmt.with_for_update().execution_options(populate_existing=True)
     note = (await session.execute(stmt)).scalar_one_or_none()
     if note is None:
         raise ApiError(404, "not_found", "Note not found")
@@ -117,7 +119,12 @@ async def _new_delivery(
     session: AsyncSession, note: Note, rule: ReminderRule, now: datetime
 ) -> None:
     deadline = due_at(note.starts_at, rule.offset_minutes)
-    if not note.active or note.deleted_at is not None:
+    if (
+        not note.active
+        or note.deleted_at is not None
+        or note.superseded_at is not None
+        or note.purged_at is not None
+    ):
         state = DeliveryState.cancelled
     elif deadline <= now:
         state = DeliveryState.missed
@@ -129,6 +136,7 @@ async def _new_delivery(
             cycle_number=rule.current_cycle_number,
             due_at=deadline,
             state=state,
+            result_at=now if state in {DeliveryState.cancelled, DeliveryState.missed} else None,
         )
     )
 
@@ -172,6 +180,8 @@ async def reconcile_reminders(
                 DeliveryState.claimed,
             }:
                 current.state = DeliveryState.cancelled
+                current.claim_token = current.claim_expires_at = None
+                current.result_at = now
             continue
         was_enabled = rule.enabled
         rule.enabled = True
@@ -182,6 +192,8 @@ async def reconcile_reminders(
                 DeliveryState.claimed,
             }:
                 current.state = DeliveryState.cancelled
+                current.claim_token = current.claim_expires_at = None
+                current.result_at = now
             rule.current_cycle_number += 1
             await session.flush()
             await _new_delivery(session, note, rule, now)
@@ -191,12 +203,21 @@ async def reconcile_reminders(
             DeliveryState.cancelled,
         }:
             deadline = due_at(note.starts_at, rule.offset_minutes)
-            if note.active and note.deleted_at is None and deadline > now:
+            if (
+                note.active
+                and note.deleted_at is None
+                and note.superseded_at is None
+                and note.purged_at is None
+                and deadline > now
+            ):
                 current.state = DeliveryState.pending
                 current.claim_token = None
                 current.claim_expires_at = None
+                current.result_at = None
             elif current.state in {DeliveryState.pending, DeliveryState.claimed}:
                 current.state = DeliveryState.cancelled
+                current.claim_token = current.claim_expires_at = None
+                current.result_at = now
     for offset in sorted(wanted - by_offset.keys()):
         rule = ReminderRule(
             note_id=note.id, offset_minutes=offset, enabled=True, current_cycle_number=1

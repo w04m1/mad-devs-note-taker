@@ -33,6 +33,19 @@ def utcnow() -> datetime:
 def claim_due(
     session: Session, *, now: datetime, grace_seconds: int, lease_seconds: int, limit: int = 100
 ) -> list[tuple[uuid.UUID, uuid.UUID]]:
+    claims, _ = _claim_due_batch(
+        session,
+        now=now,
+        grace_seconds=grace_seconds,
+        lease_seconds=lease_seconds,
+        limit=limit,
+    )
+    return claims
+
+
+def _claim_due_batch(
+    session: Session, *, now: datetime, grace_seconds: int, lease_seconds: int, limit: int
+) -> tuple[list[tuple[uuid.UUID, uuid.UUID]], int]:
     """Claim a bounded batch. Enqueue only after the caller commits."""
     expired = or_(
         ReminderDelivery.state == DeliveryState.pending,
@@ -61,25 +74,31 @@ def claim_due(
             delivery.claim_token = token
             delivery.claim_expires_at = now + timedelta(seconds=lease_seconds)
             claimed.append((delivery.id, token))
-    return claimed
+    return claimed, len(rows)
 
 
 def scan_and_enqueue(enqueue: Callable[[str, str], object]) -> int:
     settings = get_settings()
-    with sync_session_factory() as session, session.begin():
-        claims = claim_due(
-            session,
-            now=utcnow(),
-            grace_seconds=settings.reminder_grace_seconds,
-            lease_seconds=settings.reminder_claim_seconds,
-        )
-    # Failed enqueue is deliberately not rolled back: the lease recovers it.
-    for delivery_id, token in claims:
-        try:
-            enqueue(str(delivery_id), str(token))
-        except Exception:  # noqa: BLE001, S112
-            continue
-    return len(claims)
+    scan_now = utcnow()
+    total_claims = 0
+    while True:
+        with sync_session_factory() as session, session.begin():
+            claims, processed = _claim_due_batch(
+                session,
+                now=scan_now,
+                grace_seconds=settings.reminder_grace_seconds,
+                lease_seconds=settings.reminder_claim_seconds,
+                limit=100,
+            )
+        # Failed enqueue is deliberately not rolled back: the lease recovers it.
+        for delivery_id, token in claims:
+            try:
+                enqueue(str(delivery_id), str(token))
+            except Exception:  # noqa: BLE001, S112
+                continue
+        total_claims += len(claims)
+        if processed < 100:
+            return total_claims
 
 
 def authorize_delivery(
@@ -113,6 +132,8 @@ def authorize_delivery(
         or rule.current_cycle_number != delivery.cycle_number
         or not note.active
         or note.deleted_at is not None
+        or note.superseded_at is not None
+        or note.purged_at is not None
     ):
         delivery.state = DeliveryState.cancelled
         delivery.claim_token = delivery.claim_expires_at = None
@@ -127,7 +148,9 @@ def authorize_delivery(
         delivery.claim_token = delivery.claim_expires_at = None
         delivery.result_at = now
         return None
-    settings = session.get(UserSettings, PROFILE_ID)
+    settings = session.scalars(
+        select(UserSettings).where(UserSettings.id == PROFILE_ID).with_for_update()
+    ).one_or_none()
     recipient = settings.email.strip() if settings else get_settings().app_default_email.strip()
     delivery.state = DeliveryState.attempt_started
     delivery.authorized_at = now
@@ -228,16 +251,16 @@ def deliver(delivery_id: str, claim_token: str, sender: EmailSender | None = Non
         )
     if email is None:
         return False
-    error: str | None = None
+    error_code: str | None = None
     unknown = False
     if not _valid_recipient(email.recipient):
-        error = "Invalid or missing email recipient"
+        error_code = "invalid_recipient"
     else:
         try:
             (sender or smtp_sender()).send(email)
         except Exception as exc:  # noqa: BLE001
-            error = f"{type(exc).__name__}: {exc}"[:4000]
             unknown = _ambiguous_smtp_error(exc)
+            error_code = "smtp_outcome_unknown" if unknown else "smtp_send_failed"
     # Never repeat SMTP: attempt_started is already irreversible. If this update
     # crashes, maintenance classifies it unknown.
     with sync_session_factory() as session, session.begin():
@@ -250,13 +273,13 @@ def deliver(delivery_id: str, claim_token: str, sender: EmailSender | None = Non
                 DeliveryState.unknown
                 if unknown
                 else DeliveryState.failed
-                if error
+                if error_code
                 else DeliveryState.sent
             )
-            row.error, row.result_at = error, finished_at
-            if error:
+            row.error_code, row.result_at = error_code, finished_at
+            if error_code:
                 _record_visible_email_failure(session, row, now=finished_at, unknown=unknown)
-    return error is None
+    return error_code is None
 
 
 def classify_unknown(
@@ -276,6 +299,6 @@ def classify_unknown(
     )
     for row in rows:
         row.state, row.result_at = DeliveryState.unknown, now
-        row.error = row.error or "Worker outcome was not recorded; SMTP is not retried"
+        row.error_code = row.error_code or "worker_outcome_unknown"
         _record_visible_email_failure(session, row, now=now, unknown=True)
     return len(rows)

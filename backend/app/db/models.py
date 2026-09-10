@@ -13,6 +13,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -85,6 +86,7 @@ class RecurrenceSeries(Base, TimestampMixin, VersionMixin):
     template_title: Mapped[str] = mapped_column(String(255), nullable=False)
     template_body: Mapped[str] = mapped_column(Text, nullable=False, default="")
     template_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
 class Note(Base, TimestampMixin, VersionMixin):
@@ -92,6 +94,18 @@ class Note(Base, TimestampMixin, VersionMixin):
     __mapper_args__: ClassVar[dict[str, Any]] = {"version_id_col": VersionMixin.version}
     __table_args__ = (
         UniqueConstraint("series_id", "recurrence_key", name="uq_note_series_recurrence_key"),
+        ForeignKeyConstraint(
+            ["current_recurring_trash_action_id", "id"],
+            [
+                "recurring_trash_action_members.action_id",
+                "recurring_trash_action_members.note_id",
+            ],
+            name="fk_notes_current_trash_membership",
+            ondelete="NO ACTION",
+            deferrable=True,
+            initially="DEFERRED",
+            use_alter=True,
+        ),
         Index("ix_notes_starts_id", "starts_at", "id"),
         Index("ix_notes_updated_id", "updated_at", "id"),
         Index("ix_notes_state_starts", "deleted_at", "active", "starts_at"),
@@ -121,6 +135,32 @@ class Note(Base, TimestampMixin, VersionMixin):
     purged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     series_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("recurrence_series.id"))
     recurrence_key: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    current_recurring_trash_action_id: Mapped[uuid.UUID | None] = mapped_column(Uuid, index=True)
+
+
+class RecurringTrashAction(Base):
+    __tablename__ = "recurring_trash_actions"
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    series_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("recurrence_series.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    boundary_recurrence_key: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    trashed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.clock_timestamp()
+    )
+    sealed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class RecurringTrashActionMember(Base):
+    __tablename__ = "recurring_trash_action_members"
+    action_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("recurring_trash_actions.id", ondelete="RESTRICT"), primary_key=True
+    )
+    note_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("notes.id", ondelete="RESTRICT"), primary_key=True
+    )
 
 
 class NoteTag(Base):
@@ -208,7 +248,7 @@ class ReminderDelivery(Base, TimestampMixin):
     recipient_snapshot: Mapped[str | None] = mapped_column(String(320))
     content_snapshot: Mapped[dict[str, Any] | None] = mapped_column(json_type)
     result_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    error: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(64))
 
 
 class Notification(Base):
@@ -235,4 +275,4 @@ class OutboxEvent(Base):
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    last_error: Mapped[str | None] = mapped_column(Text)
+    error_code: Mapped[str | None] = mapped_column(String(64))

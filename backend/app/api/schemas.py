@@ -106,6 +106,44 @@ class Page(BaseModel):
     page_size: int
 
 
+class TrashSeriesAction(BaseModel):
+    kind: Literal["series_action"] = "series_action"
+    action_id: uuid.UUID
+    series_id: uuid.UUID
+    boundary_recurrence_key: datetime
+    trashed_at: datetime
+    count: int
+    preview: NoteResponse
+
+
+class TrashLegacyOccurrence(BaseModel):
+    kind: Literal["legacy_occurrence"] = "legacy_occurrence"
+    note: NoteResponse
+    trashed_at: datetime
+
+
+class TrashNote(BaseModel):
+    kind: Literal["note"] = "note"
+    note: NoteResponse
+    trashed_at: datetime
+
+
+TrashGroup = Annotated[
+    TrashSeriesAction | TrashLegacyOccurrence | TrashNote, Field(discriminator="kind")
+]
+
+
+class TrashGroupPage(BaseModel):
+    items: list[TrashGroup]
+    total: int
+    page: int
+    page_size: int
+
+
+class TrashActionRestoreRequest(BaseModel):
+    expected_series_version: int = Field(ge=1)
+
+
 RecurrenceFrequency = Literal["daily", "weekly", "monthly"]
 
 
@@ -137,7 +175,8 @@ class SeriesCreate(SeriesFields):
 
 class SeriesSplit(SeriesFields):
     recurrence_key: datetime
-    expected_version: int = Field(ge=1)
+    expected_series_version: int | None = Field(default=None, ge=1)
+    expected_version: int | None = Field(default=None, ge=1, deprecated=True)
     expected_occurrence_version: int = Field(ge=1)
 
     @field_validator("recurrence_key")
@@ -145,15 +184,61 @@ class SeriesSplit(SeriesFields):
     def aware_key(cls, value: datetime) -> datetime:
         return _aware(value)
 
+    @model_validator(mode="after")
+    def resolve_series_version(self):
+        canonical = self.__dict__.get("expected_series_version")
+        legacy = self.__dict__.get("expected_version")
+        if canonical is None and legacy is None:
+            raise ValueError("expected_series_version is required")
+        if canonical is not None and legacy is not None and canonical != legacy:
+            raise ValueError("series version aliases must match")
+        return self
+
+    @property
+    def series_version(self) -> int:
+        return self.__dict__.get("expected_series_version") or self.__dict__["expected_version"]
+
+
+class RecurrencePreviewRequest(BaseModel):
+    local_start: datetime
+    timezone: Annotated[str, Field(min_length=1, max_length=64)]
+    frequency: RecurrenceFrequency
+    end_date: date
+
+    @field_validator("local_start")
+    @classmethod
+    def naive_local_start(cls, value: datetime) -> datetime:
+        return _local(value)
+
+
+class RecurrencePreviewResponse(BaseModel):
+    starts_at: datetime
+    occurrence_count: int
+
 
 class SeriesPortionRequest(BaseModel):
-    expected_version: int = Field(ge=1)
+    expected_series_version: int | None = Field(default=None, ge=1)
+    expected_version: int | None = Field(default=None, ge=1, deprecated=True)
     recurrence_key: datetime | None = None
 
     @field_validator("recurrence_key")
     @classmethod
     def aware_key(cls, value: datetime | None) -> datetime | None:
         return _aware(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def resolve_series_version(self):
+        canonical = self.__dict__.get("expected_series_version")
+        legacy = self.__dict__.get("expected_version")
+        if canonical is None and legacy is None:
+            raise ValueError("expected_series_version is required")
+        if canonical is not None and legacy is not None and canonical != legacy:
+            raise ValueError("series version aliases must match")
+        return self
+
+    @property
+    def series_version(self) -> int:
+        return self.__dict__.get("expected_series_version") or self.__dict__["expected_version"]
 
 
 class SeriesResponse(BaseModel):

@@ -36,11 +36,11 @@ def publish_batch(session: Session, publish, *, now: datetime, limit: int = 100)
         row.attempts += 1
         try:
             publish(CHANNEL, json.dumps(row.payload, separators=(",", ":")))
-        except Exception as exc:  # noqa: BLE001
-            row.last_error = f"{type(exc).__name__}: {exc}"[:4000]
+        except Exception:  # noqa: BLE001
+            row.error_code = "outbox_publish_failed"
             row.next_attempt_at = now + timedelta(seconds=min(60, 2 ** min(row.attempts - 1, 6)))
         else:
-            row.published_at, row.next_attempt_at, row.last_error = now, None, None
+            row.published_at, row.next_attempt_at, row.error_code = now, None, None
             published += 1
     return published
 

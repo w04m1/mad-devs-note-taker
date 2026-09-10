@@ -13,14 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.errors import ApiError
 from app.db.models import (
+    DeliveryState,
     Note,
     NoteTag,
     OccurrenceException,
     RecurrenceSeries,
+    ReminderDelivery,
     ReminderRule,
     SeriesReminderTemplate,
     SeriesTag,
 )
+from app.domain.common import due_at
 from app.domain.notes import reconcile_reminders, validate_tags
 
 Frequency = Literal["daily", "weekly", "monthly"]
@@ -192,6 +195,7 @@ async def materialize_note(
 async def create_series_rows(
     session: AsyncSession, payload, now: datetime, *, limit: int = MAX_OCCURRENCES
 ) -> RecurrenceSeries:
+    limit = min(limit, MAX_OCCURRENCES)
     await validate_tags(session, payload.tag_ids)
     try:
         occurrences = expand_occurrences(
@@ -240,8 +244,13 @@ async def create_series_rows(
         for x in payload.reminder_offsets_minutes
     )
     await session.flush()
+    notes_to_add: list[Note] = []
+    associations_and_rules: list[object] = []
+    deliveries: list[ReminderDelivery] = []
     for occurrence in occurrences:
+        note_id = uuid.uuid4()
         note = Note(
+            id=note_id,
             title=title,
             body=payload.body,
             starts_at=occurrence.instant,
@@ -249,12 +258,48 @@ async def create_series_rows(
             series_id=series.id,
             recurrence_key=occurrence.instant,
         )
-        session.add(note)
-        await session.flush()
-        session.add_all(NoteTag(note_id=note.id, tag_id=x) for x in payload.tag_ids)
-        await reconcile_reminders(
-            session, note, payload.reminder_offsets_minutes, schedule_changed=False, now=now
+        notes_to_add.append(note)
+        associations_and_rules.extend(
+            NoteTag(note_id=note_id, tag_id=x) for x in payload.tag_ids
         )
+        for offset in payload.reminder_offsets_minutes:
+            rule_id = uuid.uuid4()
+            deadline = due_at(occurrence.instant, offset)
+            state = (
+                DeliveryState.cancelled
+                if not payload.active
+                else DeliveryState.missed
+                if deadline <= now
+                else DeliveryState.pending
+            )
+            associations_and_rules.append(
+                ReminderRule(
+                    id=rule_id,
+                    note_id=note_id,
+                    offset_minutes=offset,
+                    enabled=True,
+                    current_cycle_number=1,
+                )
+            )
+            deliveries.append(
+                ReminderDelivery(
+                    reminder_rule_id=rule_id,
+                    cycle_number=1,
+                    due_at=deadline,
+                    state=state,
+                    result_at=(
+                        now
+                        if state in {DeliveryState.cancelled, DeliveryState.missed}
+                        else None
+                    ),
+                )
+            )
+    session.add_all(notes_to_add)
+    await session.flush()
+    session.add_all(associations_and_rules)
+    await session.flush()
+    session.add_all(deliveries)
+    await session.flush()
     return series
 
 

@@ -18,6 +18,8 @@ def test_all_planned_entities_are_registered() -> None:
         "reminder_deliveries",
         "notifications",
         "outbox_events",
+        "recurring_trash_actions",
+        "recurring_trash_action_members",
     }
 
 
