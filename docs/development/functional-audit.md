@@ -42,7 +42,7 @@ into PostgreSQL evidence.
 | A failing `gzip -dc /tmp/bad.gz | cat` followed by a success echo | The pipeline exited 0 and reached the success path because POSIX reports the final pipeline member. This directly demonstrates the restore decompression-status bug without touching a database. |
 | Disposable PostgreSQL 16.4 databases, migrated through `0003_background`, driven through the frozen backend environment | Confirmed torn Note responses, stale ORM identity after an unlocked preload followed by `FOR UPDATE`, no-op recurring-delete series bumps, the reminder backlog loss, cleanup backlog, exact grace and claim-expiry boundaries, and recovery-token/outbox behavior. Temporary databases, containers, and `/tmp` drivers were removed. |
 | `COMPOSE_PROJECT_NAME=notetaker-oracle-01 MAILPIT_UI_PORT=0 docker compose build backend`, then isolated `up -d --wait postgres redis mailpit`, `docker compose run --rm migrate`, and `docker compose run --rm --no-deps ... backend uv run --frozen pytest -c /app/pyproject.toml -vv /tmp/notetaker_oracle_test.py` | 2 passed in 3.47s. This oracle proved English/Russian/literal search, tag intersection, status and half-open filters, stable sort/page behavior, empty out-of-range pages, and Upcoming boundaries/totals across four shared pages. The project was removed with `docker compose down -v`. This closes the earlier backend-list correctness concern; the confirmed Upcoming UI pager defect remains. |
-| Isolated 10,000-occurrence, zero-reminder-offset materialization run | Completed in **15.409 seconds**. Performance status is **Partial / target miss** for this measured case. Hardware/workload percentile thresholds remain pending, and discovery stays open until the maximum permitted worst-case reminder-offset result is available and reconciled. |
+| Isolated exactly-10,000-occurrence materialization matrix | With one cold and three warm requests per case, the zero-offset warm median was **15.740 seconds**. The all-three-offset warm median was **99.940 seconds**, with warm runs from **89.061 to 105.497 seconds**. All eight requests returned 201 with 10,000 occurrences and atomic visibility. |
 | Isolated persistence project `nt-persist-1789011146` | Settings, tags, an ordinary note, three reminder rules/nine cycles, and a three-note series with override/cancellation survived sequential PostgreSQL, Redis, backend, worker, and Beat restarts byte-for-byte. A within-grace reminder produced one Mailpit message/notification; a beyond-grace reminder became missed with none. Restart ordering itself consumed about 10–11 seconds while migration ran, which remains relevant to short grace windows. |
 | Isolated realtime project `rt-audit-20260310` | After Redis stopped, an existing socket got `resync_required` in 0.186s but stayed open; a late socket got no initial degraded signal; readiness stayed 200; a durable tag mutation was unseen by both sockets for 32.012s. Redis recovery delivered resync and the queued event. The project was removed with volumes. |
 | Isolated deployment-negative projects `nt-audit-neg` and `nt-audit-bypass` | A forced migrate exit 42 made initial `docker compose up --wait --wait-timeout 90` fail and kept dependents unstarted. After a later failed migrate, `docker compose restart backend worker beat` still exited 0 and made writers/readiness healthy while `/notes` failed with `UndefinedTableError`; frontend health also masked a proxied API 502. Both projects and volumes were removed. |
@@ -53,6 +53,37 @@ into PostgreSQL evidence.
 | `http://127.0.0.1:5173` plus isolated Compose browser stacks, each with two independent Chromium contexts | Confirmed core CRUD/realtime flows, the Settings stale-draft overwrite, stale future-series and Calendar-scope overwrites, duplicate create/admission windows, and recurring-trash representation/restore behavior. Audit-created product rows were cleaned through supported APIs where possible. |
 | Fresh isolated `./tests/e2e/run.sh` | All 6 Chromium scenarios passed in 36.3 seconds (81.6 seconds for the complete wrapper). Its containers, network, and volumes were removed. |
 | Isolated Beat project `beat-audit-38506`, including `SIGSTOP` and Redis-loss probes | The PID-only health check stayed healthy while the scheduler was stopped for 46.6 seconds and its queue stopped advancing. It also stayed healthy throughout Redis loss while publish attempts blocked or failed. The isolated project and volumes were removed; the main Compose project was not touched. |
+
+During the 10,000-occurrence POSTs, all 4,736 concurrent notes/search probes
+returned 200. Their p95 values were 12.18–18.84 ms; the maximum list probe was
+401.40 ms and the maximum search probe was 36.97 ms. Probes observed only zero or
+10,000 rows, never a partial graph. Stack logs had no error, traceback, exception,
+timeout, or deadlock match. Compose/Uvicorn configures no application HTTP request
+timeout; the audit client used 600 seconds.
+
+The full materialization artifacts are retained at:
+
+```
+/home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-2f3f109d/01a089b7-329b-769a-9f6d-8198b7ee8998/
+```
+
+The complete cleanup proof is:
+
+```
+/home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-2f3f109d/01a089b7-329b-769a-9f6d-8198b7ee8998/cleanup.txt
+```
+
+`REPORT.md` summarizes the method. `results.json` contains exact payloads,
+responses, database snapshots, and probe samples. `logs.txt` retains complete
+stack logs. `hardware.txt`, `docker_stats.txt`, and the other files retain runtime
+context. `cleanup.txt` records final application-row counts of
+`0|0|0|0|0|0|0|0|0`, followed by removal of project `audit10k` containers, its two
+volumes, and its network. The earlier independent zero-offset/read-baseline
+artifacts and teardown proof remain at:
+
+```
+/home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-88582517/01a089ac-d812-75cc-ba76-9abaaa121b07/
+```
 
 The audit also inspected generated OpenAPI, Compose configuration, Alembic head,
 tracked E2E artifacts, and source paths. `tests/e2e/artifacts/results/.last-run.json`
@@ -362,6 +393,12 @@ entry into and recovery from degraded/live epochs, not the absence of replay.
   backend/worker publication cannot refresh it. A scheduled task executed by a
   worker and a new database heartbeat table would bind health to the wrong
   component and are not required.
+- **FA-M-10K-MATERIALIZATION · Medium release blocker absent an owner-approved
+  exception — maximum-size synchronous series creation is too slow.** The warm
+  median was 15.740 seconds with no offsets and 99.940 seconds with all three
+  allowed offsets. All writes were atomic, and concurrent reads remained
+  responsive, but the three-offset warm runs took 89.061–105.497 seconds. No
+  application timeout is configured, so completion alone is not acceptance.
 - **Medium operational — structured application logging is absent.** Application
   code does not provide the PLAN §16 correlation/redaction envelope for request
   failures, reminder recovery/missed/unknown transitions, enqueue/outbox retries
@@ -405,10 +442,6 @@ These are missing proof, not automatic functional failures:
 6. **Medium evidence risk:** the audit reproduced open-socket and late-join Redis
    degradation. Longer outage cycles, process-crash timing, cross-browser timezone
    conformance, and the resolved recurrence overlap UX remain unproved.
-7. **Low evidence risk:** the zero-reminder-offset 10,000-occurrence case is now
-   measured at 15.409 seconds and is a Partial / target miss. The maximum permitted
-   worst-case reminder-offset case, hardware percentiles, and browser/UI p95
-   responsiveness remain open.
 
 ## Refuted findings and allowed limits
 
@@ -564,9 +597,10 @@ KEY UPDATE` or take a lock that later needs an upgrade. A stable referenced row
 that needs only FK/existence protection may use `FOR KEY SHARE`, still in the same
 class order. Lock every already-known row in one ordered statement per class where
 practical. Association and template rows are locked after their Tag/Series/Note
-parents and before their Rule/Delivery children. A transaction must not acquire a row from an earlier class after it has
-acquired a later-class lock. Redis publication, SMTP, and other network I/O must
-not run while database row locks are held. SMTP's existing authorization/attempt
+parents and before their Rule/Delivery children. A transaction must not acquire a
+row from an earlier class after it has acquired a later-class lock. Redis
+publication, SMTP, and other network I/O must not run while database row locks are
+held. SMTP's existing authorization/attempt
 boundary remains a separate at-most-one-attempt protocol, not permission to retry
 a send.
 
@@ -623,19 +657,31 @@ unchanged. An atomically observed nullable series version on every Note response
 remains additive remediation design and must not be assembled by a later,
 independent READ COMMITTED query.
 
-Quantitative performance acceptance remains owner approval work. The existing
-500 ms direct-SQL check is only a host-sensitive regression tripwire. The measured
-10,000-occurrence, zero-reminder-offset materialization took 15.409 seconds and is
-therefore recorded as **Partial / target miss**, not a pass. Discovery remains open
-until the maximum permitted worst-case reminder-offset result is known. Do not claim
-API/UI percentiles, cold-start bounds, reminder burst capacity, or a final
-materialization acceptance result until the hardware envelope, workloads, sample
-sizes, percentiles, and thresholds are approved.
+Quantitative thresholds remain owner approval work. The 500 ms direct-SQL check
+is only a host-sensitive regression tripwire. The measured exactly-10,000 create
+path is a **Medium release blocker absent an owner-approved exception**: its warm
+median was 15.740 seconds with zero offsets and 99.940 seconds with all three
+offsets; the three-offset warm range was 89.061–105.497 seconds. This is not a pass
+merely because the application configures no request timeout. Do not claim API/UI
+percentiles, cold-start bounds, reminder burst capacity, or an accepted
+materialization SLO until the hardware envelope, workloads, sample sizes,
+percentiles, and thresholds are approved.
+
+The least-risk first remediation is a create-only fast path. Keep the synchronous
+HTTP contract and build the prevalidated ORM graph in bounded chunks. Flush each
+chunk without a per-note `SELECT` or per-note reminder reconciliation. Create the
+series, notes, templates, rules, deliveries, and outbox record in one database
+transaction, so no partial series becomes visible. Preserve the current shared
+state-machine paths for edits and splits. An asynchronous create job, with its
+additional status, retry, idempotency, cancellation, and UX contract, is a fallback
+only if this measured synchronous optimization cannot meet the owner-approved
+target.
 
 ## Exit condition
 
 The audit remains open. Before calling it closed, reconcile any later specialist
 reports into this ledger, apply the resolved concurrency-field compatibility
-contract, agree remediation scope and acceptance tests, implement fixes in dependency order, and rerun the
-appropriate isolated recovery, PostgreSQL/service, frontend, browser, scale, and
-smoke gates. None of that remediation has begun in this workstream.
+contract, agree remediation scope and acceptance tests, implement fixes in
+dependency order, and rerun the appropriate isolated recovery,
+PostgreSQL/service, frontend, browser, scale, and smoke gates. None of that
+remediation has begun in this workstream.
