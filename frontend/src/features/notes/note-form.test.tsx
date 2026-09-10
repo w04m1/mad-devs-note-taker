@@ -5,6 +5,24 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Note } from "../../api/contracts";
 import { manualNoteChoices, manualNoteInstant, NoteForm } from "./note-form";
 
+vi.mock("../../components/date-time-picker", () => ({
+  DateTimePicker: ({
+    label,
+    value,
+    onChange,
+  }: {
+    label: string;
+    value: string;
+    onChange: (value: string) => void;
+  }) => (
+    <input
+      aria-label={label}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+    />
+  ),
+}));
+
 const note: Note={id:"10000000-0000-4000-8000-000000000001",title:"Original",body:"Body",starts_at:"2026-04-01T10:00:00Z",active:true,tags:[],reminder_offsets_minutes:[10],version:1,created_at:"2026-01-01T00:00:00Z",updated_at:"2026-01-01T00:00:00Z",deleted_at:null,series_id:null,recurrence_key:null};
 const wrapper=(client:QueryClient)=>(<QueryClientProvider client={client}><NoteForm note={note} tags={[]} timezone="UTC" onSaved={vi.fn()} onCancel={vi.fn()}/></QueryClientProvider>);
 afterEach(()=>{cleanup();vi.unstubAllGlobals()});

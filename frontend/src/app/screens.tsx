@@ -80,6 +80,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog";
+import { DateTimePicker } from "../components/date-time-picker";
 
 const CalendarView = lazy(async () => {
   const module = await import("../features/calendar/calendar-view");
@@ -418,17 +419,21 @@ export function NotesScreen() {
           </div>
         </fieldset>
         <Field label="From">
-          <Input
-            type="datetime-local"
+          <DateTimePicker
+            label="From"
+            clearable
+            defaultTime="00:00"
             value={local(params.starts_from)}
-            onChange={(e) => set("starts_from", instant(e.target.value))}
+            onChange={(value) => set("starts_from", instant(value))}
           />
         </Field>
         <Field label="To">
-          <Input
-            type="datetime-local"
+          <DateTimePicker
+            label="To"
+            clearable
+            defaultTime="23:59"
             value={local(params.starts_to)}
-            onChange={(e) => set("starts_to", instant(e.target.value))}
+            onChange={(value) => set("starts_to", instant(value))}
           />
         </Field>
         <Field label="Sort">
@@ -833,12 +838,20 @@ export function TagsScreen() {
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
           <Field label="Color">
-            <Input
-              aria-label="Color"
-              type="color"
-              value={color}
-              onChange={(e) => setColor(e.target.value)}
-            />
+            <span className="relative block size-10 shrink-0 cursor-pointer rounded-full border border-input bg-background p-1 shadow-sm focus-within:ring-2 focus-within:ring-ring">
+              <span
+                aria-hidden
+                className="block size-full rounded-full"
+                style={{ backgroundColor: color }}
+              />
+              <Input
+                aria-label="Color"
+                type="color"
+                className="absolute inset-0 size-full cursor-pointer opacity-0"
+                value={color}
+                onChange={(e) => setColor(e.target.value)}
+              />
+            </span>
           </Field>
           <Button>
             {editing ? (

@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "../../components/ui/select";
 import { AlertTriangle, Clock3, Save } from "lucide-react";
+import { DateTimePicker } from "../../components/date-time-picker";
 
 type Draft = {
   title: string;
@@ -206,11 +207,11 @@ export function SeriesForm({
       </Field>
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="First local date and time">
-          <Input
-            type="datetime-local"
+          <DateTimePicker
+            label="First local date and time"
             value={draft.local_start}
-            onChange={(e) =>
-              setDraft({ ...draft, local_start: e.target.value })
+            onChange={(value) =>
+              setDraft({ ...draft, local_start: value })
             }
           />
         </Field>
@@ -234,10 +235,11 @@ export function SeriesForm({
           </Select>
         </Field>
         <Field label="Inclusive end date">
-          <Input
-            type="date"
+          <DateTimePicker
+            label="Inclusive end date"
+            mode="date"
             value={draft.end_date}
-            onChange={(e) => setDraft({ ...draft, end_date: e.target.value })}
+            onChange={(value) => setDraft({ ...draft, end_date: value })}
           />
         </Field>
       </div>

@@ -10,6 +10,7 @@ import { Textarea } from "../../components/ui/textarea";
 import { Checkbox } from "../../components/ui/checkbox";
 import { Switch } from "../../components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
+import { DateTimePicker } from "../../components/date-time-picker";
 import { AlertTriangle, Clock3, Save } from "lucide-react";
 
 type Draft = {
@@ -213,11 +214,11 @@ export function NoteForm({
         />
       </Field>
       <Field label="Date and time" error={errors.starts_at}>
-        <Input
-          type="datetime-local"
+        <DateTimePicker
+          label="Date and time"
           value={draft.starts_at}
-          onChange={(e) => {
-            setDraft({ ...draft, starts_at: e.target.value });
+          onChange={(value) => {
+            setDraft({ ...draft, starts_at: value });
             setOverlapChoice(null);
             setErrors((previous) => ({ ...previous, starts_at: "" }));
           }}
