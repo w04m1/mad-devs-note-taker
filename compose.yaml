@@ -9,7 +9,7 @@ x-backend: &backend
     - path: .env
       required: false
   environment: &backend-environment
-    DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://notetaker:notetaker@postgres:5432/notetaker}
+    DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-notetaker}:${POSTGRES_PASSWORD:-notetaker}@postgres:5432/${POSTGRES_DB:-notetaker}}
     REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
     SMTP_HOST: ${SMTP_HOST:-mailpit}
@@ -29,6 +29,7 @@ x-backend: &backend
     MAX_SERIES_OCCURRENCES: ${MAX_SERIES_OCCURRENCES:-10000}
     ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    BEAT_HEALTH_MAX_AGE_SECONDS: ${BEAT_HEALTH_MAX_AGE_SECONDS:-15}
   init: true
   restart: unless-stopped
 
@@ -87,7 +88,7 @@ services:
 
   backend:
     <<: *backend
-    command: ["uv", "run", "--frozen", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    command: ["sh", "/app/service-entrypoint.sh", "uv", "run", "--frozen", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -104,7 +105,7 @@ services:
 
   worker:
     <<: *backend
-    command: ["uv", "run", "--frozen", "celery", "-A", "app.jobs.celery_app:celery_app", "worker", "--loglevel=INFO", "--hostname=worker@%h"]
+    command: ["sh", "/app/service-entrypoint.sh", "uv", "run", "--frozen", "celery", "-A", "app.jobs.celery_app:celery_app", "worker", "--loglevel=INFO", "--hostname=worker@%h"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -121,18 +122,18 @@ services:
 
   beat:
     <<: *backend
-    command: ["uv", "run", "--frozen", "celery", "-A", "app.jobs.celery_app:celery_app", "beat", "--loglevel=INFO", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule"]
+    command: ["sh", "/app/service-entrypoint.sh", "uv", "run", "--frozen", "celery", "-A", "app.jobs.celery_app:celery_app", "beat", "--loglevel=INFO", "--pidfile=/tmp/celerybeat.pid", "--schedule=/tmp/celerybeat-schedule", "--scheduler", "app.jobs.beat:FreshnessScheduler"]
     depends_on:
       migrate:
         condition: service_completed_successfully
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "test -s /tmp/celerybeat.pid && kill -0 $$(cat /tmp/celerybeat.pid)"]
-      interval: 10s
+      test: ["CMD", "python", "/app/beat-healthcheck.py"]
+      interval: 5s
       timeout: 3s
-      retries: 12
-      start_period: 15s
+      retries: 2
+      start_period: 20s
 
   frontend:
     build:

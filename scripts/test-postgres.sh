@@ -23,13 +23,22 @@ docker compose exec -T postgres dropdb -U notetaker --if-exists "$qa_db"
 docker compose exec -T postgres createdb -U notetaker "$qa_db"
 docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade 0001
 # Historical boundary: lifecycle columns must not leak backward from current models.
-test "$(docker compose exec -T postgres psql -U notetaker -d "$qa_db" -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name='notes' AND column_name IN ('superseded_at','series_trashed_at','purged_at')")" = 0
-docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade head
-docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic check
+test "$(docker compose exec -T postgres psql -U notetaker -d "$qa_db" -Atc "SELECT count(*) FROM information_schema.columns WHERE table_name='notes' AND column_name IN ('superseded_at','series_trashed_at','purged_at','current_recurring_trash_action_id')")" = 0
+# Reversible historical migrations retain their upgrade/downgrade coverage.
+docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade 0003_background
 docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic downgrade 0001
-docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade head
+docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade 0003_background
 docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic downgrade base
+docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade 0003_background
+# The full-outage storage cutover is intentionally activation-irreversible.
 docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic upgrade head
+if docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend \
+  uv run --frozen alembic downgrade 0003_background >/dev/null 2>&1; then
+  echo "0004_storage_contract downgrade unexpectedly succeeded" >&2
+  exit 1
+fi
+test "$(docker compose exec -T postgres psql -U notetaker -d "$qa_db" -Atc 'SELECT version_num FROM alembic_version')" = 0004_storage_contract
+docker compose run --rm --no-deps -e DATABASE_URL="$qa_url" backend uv run --frozen alembic check
 # A separately managed worker proves tasks cross a real Redis broker/process boundary.
 docker compose run -d --name "$worker_name" --no-deps   -e DATABASE_URL="$qa_url" -e REDIS_URL=redis://redis:6379/14   -e CELERY_BROKER_URL=redis://redis:6379/15 worker >/dev/null
 # Wait for this exact worker rather than relying on Compose's development worker.
