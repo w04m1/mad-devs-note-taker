@@ -1,8 +1,9 @@
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 export const project = process.env.E2E_COMPOSE_PROJECT ?? "notetaker-e2e";
-const repo = new URL("../../../", import.meta.url).pathname;
+const repo = fileURLToPath(new URL("../../../", import.meta.url));
 export type Note = { id:string; title:string; body:string; starts_at:string; active:boolean; version:number; series_id:string|null; recurrence_key:string|null; reminder_offsets_minutes:number[]; tags:{id:string}[] };
 export type Series = { id:string; version:number; end_date:string; timezone:string };
 
@@ -35,7 +36,7 @@ export async function poll<T>(fn:()=>Promise<T>, accept:(value:T)=>boolean, time
 export async function openApp(page:Page,path:string):Promise<void>{await page.goto(path); await expect(page.getByRole("heading",{level:1})).toBeVisible();}
 export function card(page:Page,title:string){return page.locator("li").filter({has:page.getByRole("heading",{name:title,exact:true})});}
 export async function editCard(page:Page,title:string,nextTitle:string,body?:string):Promise<void>{
-  const row=card(page,title); await row.getByRole("button",{name:"Edit"}).click(); const form=page.getByRole("form",{name:"Edit note"}); await form.getByLabel("Title").fill(nextTitle); if(body!==undefined)await form.getByLabel("Body").fill(body); await form.getByRole("button",{name:"Save",exact:true}).click();
+  const row=card(page,title); await row.getByRole("button",{name:"Edit"}).click(); const form=page.getByRole("form",{name:"Edit note"}); await form.getByLabel("Title").fill(nextTitle); if(body!==undefined)await form.getByLabel("Body").fill(body); await form.getByRole("button",{name:"Save note",exact:true}).click();
 }
 export function redisPublish(payload:object):void {compose("exec","-T","redis","redis-cli","PUBLISH","notetaker.events",JSON.stringify(payload));}
 export async function mailpitMessages(request:APIRequestContext):Promise<any[]>{const r=await request.get("http://127.0.0.1:"+(process.env.E2E_MAILPIT_PORT??"18025")+"/api/v1/messages"); if(!r.ok())throw new Error(`Mailpit ${r.status()}`); const data=await r.json(); return data.messages??data.items??[];}

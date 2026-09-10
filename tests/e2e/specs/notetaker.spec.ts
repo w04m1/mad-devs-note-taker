@@ -54,8 +54,8 @@ test("concurrent editors preserve a stale draft and show an explicit conflict",a
   await card(a,"Concurrent base").getByRole("button",{name:"Edit"}).click(); await card(b,"Concurrent base").getByRole("button",{name:"Edit"}).click();
   const af=a.getByRole("form",{name:"Edit note"}), bf=b.getByRole("form",{name:"Edit note"});
   await af.getByLabel("Title").fill("Winner title"); await bf.getByLabel("Body").fill("losing draft must remain");
-  await af.getByRole("button",{name:"Save",exact:true}).click(); await expect(a.getByText("Winner title",{exact:true})).toBeVisible();
-  await expect(bf.getByLabel("Body")).toHaveValue("losing draft must remain"); await bf.getByRole("button",{name:"Save",exact:true}).click();
+  await af.getByRole("button",{name:"Save note",exact:true}).click(); await expect(a.getByText("Winner title",{exact:true})).toBeVisible();
+  await expect(bf.getByLabel("Body")).toHaveValue("losing draft must remain"); await bf.getByRole("button",{name:"Save note",exact:true}).click();
   await expect(b.getByRole("alert").filter({hasText:"This note changed elsewhere."})).toBeVisible(); await expect(bf.getByLabel("Body")).toHaveValue("losing draft must remain");
 });
 
@@ -63,10 +63,10 @@ test("recurrence keeps earlier edits and cancellation when the future is split",
   const start=new Date(Date.now()+2*86400000); start.setUTCHours(12,0,0,0); await createSeries(request,"Series base",start,5);
   const page=await client(browser); await openApp(page,"/notes"); let rows=await notes(request); expect(rows.length).toBe(6);
   const first=rows[0],second=rows[1],third=rows[2];
-  await card(page,"Series base").first().getByRole("button",{name:"Edit"}).click(); await page.getByRole("button",{name:"Only this occurrence"}).click(); const one=page.getByRole("form",{name:"Edit note"}); await one.getByLabel("Title").fill("Earlier exception"); await one.getByRole("button",{name:"Save",exact:true}).click();
+  await card(page,"Series base").first().getByRole("button",{name:"Edit"}).click(); await page.getByRole("button",{name:"Only this occurrence"}).click(); const one=page.getByRole("form",{name:"Edit note"}); await one.getByLabel("Title").fill("Earlier exception"); await one.getByRole("button",{name:"Save note",exact:true}).click();
   await expect(page.getByText("Earlier exception",{exact:true})).toBeVisible();
   rows=await notes(request); const secondNow=rows.find(n=>n.id===second.id)!; const secondCard=card(page,"Series base").filter({has:page.locator(`time`)}).nth(0); // first remaining base is the second slot
-  page.once("dialog",d=>d.accept()); await secondCard.getByRole("button",{name:"Trash"}).click(); await poll(()=>notes(request,true),v=>v.some(n=>n.id===secondNow.id));
+  await secondCard.getByRole("button",{name:"Move to trash"}).click(); await page.getByRole("dialog").getByRole("button",{name:"Move to trash"}).click(); await poll(()=>notes(request,true),v=>v.some(n=>n.id===secondNow.id));
   await page.reload(); const baseCards=card(page,"Series base"); await expect(baseCards).toHaveCount(4);
   await baseCards.first().getByRole("button",{name:"Edit"}).click(); await page.getByRole("button",{name:"This and future occurrences"}).click(); const future=page.getByRole("form",{name:"Edit this and future occurrences"}); await future.getByLabel("Title").fill("Replacement future"); await future.getByRole("button",{name:"Save series"}).click();
   const visible=await poll(()=>notes(request),v=>v.some(n=>n.title==="Replacement future")); expect(visible.find(n=>n.id===first.id)?.title).toBe("Earlier exception"); expect((await notes(request,true)).some(n=>n.id===second.id)).toBeTruthy(); expect(visible.filter(n=>n.title==="Replacement future").length).toBeGreaterThanOrEqual(1); expect(visible.filter(n=>n.title==="Series base").length).toBe(0);
@@ -74,11 +74,10 @@ test("recurrence keeps earlier edits and cancellation when the future is split",
 
 test("trash and restore update both clients and reinstate only future reminder work",async({browser,request})=>{
   const created=await createNote(request,"Restore across clients",new Date(Date.now()+3_600_000),[10]); const a=await client(browser),b=await client(browser); await openApp(a,"/notes"); await openApp(b,"/notes");
-  pageAccept(a); await card(a,created.title).getByRole("button",{name:"Trash"}).click(); await expect(card(b,created.title)).toHaveCount(0,{timeout:8_000});
+  await card(a,created.title).getByRole("button",{name:"Move to trash"}).click(); await a.getByRole("dialog").getByRole("button",{name:"Move to trash"}).click(); await expect(card(b,created.title)).toHaveCount(0,{timeout:8_000});
   await openApp(b,"/trash"); await expect(b.getByText(created.title,{exact:true})).toBeVisible();
   expect(sql(`SELECT state::text FROM reminder_deliveries d JOIN reminder_rules r ON r.id=d.reminder_rule_id WHERE r.note_id='${created.id}' ORDER BY d.cycle_number DESC LIMIT 1`)).toBe("cancelled");
   await b.getByRole("button",{name:"Restore"}).click(); await expect(b.getByText("Trash is empty.")).toBeVisible(); await expect(card(a,created.title)).toBeVisible({timeout:8_000});
   expect(sql(`SELECT state::text FROM reminder_deliveries d JOIN reminder_rules r ON r.id=d.reminder_rule_id WHERE r.note_id='${created.id}' ORDER BY d.cycle_number DESC LIMIT 1`)).toBe("pending");
   expect(Number(sql(`SELECT count(*) FROM reminder_deliveries d JOIN reminder_rules r ON r.id=d.reminder_rule_id WHERE r.note_id='${created.id}' AND d.due_at <= now()`))).toBe(0);
 });
-function pageAccept(page:Page){page.once("dialog",d=>d.accept());}

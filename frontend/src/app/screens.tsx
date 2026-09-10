@@ -538,7 +538,9 @@ function NoteCards({
                       </Badge>
                     )}
                   </div>
-                  <CardTitle className="text-lg">{note.title}</CardTitle>
+                  <CardTitle>
+                    <h2 className="text-lg">{note.title}</h2>
+                  </CardTitle>
                   <CardDescription>
                     <time dateTime={note.starts_at}>
                       {new Date(note.starts_at).toLocaleString(
