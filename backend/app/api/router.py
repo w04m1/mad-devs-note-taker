@@ -681,7 +681,37 @@ async def split_series(
     series_id: uuid.UUID, payload: SeriesSplit, session: SessionDep, settings: SettingsDep
 ) -> SeriesResponse:
     async with session.begin():
-        old = await _locked_series(session, series_id, payload.expected_version)
+        # The predecessor row is always the first lock in a split. This serializes
+        # competing splits without reversing the established series -> notes order.
+        old = await _locked_series(session, series_id)
+        successor_id = (
+            await session.execute(
+                select(RecurrenceSeries.id)
+                .where(RecurrenceSeries.predecessor_id == old.id)
+                .order_by(RecurrenceSeries.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if old.split_boundary is not None or successor_id is not None:
+            raise ApiError(
+                409,
+                "series_not_leaf",
+                "Only the open leaf recurrence series can be split",
+                current={
+                    "id": str(old.id),
+                    "split_boundary": (
+                        old.split_boundary.isoformat() if old.split_boundary is not None else None
+                    ),
+                    "successor_id": str(successor_id) if successor_id is not None else None,
+                },
+            )
+        if old.version != payload.expected_version:
+            raise ApiError(
+                409,
+                "version_conflict",
+                "The recurrence series changed",
+                current={"id": str(old.id), "version": old.version},
+            )
         selected = (
             await session.execute(
                 select(Note)

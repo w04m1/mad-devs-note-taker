@@ -713,7 +713,76 @@ async def test_split_rejects_preserved_key_collision_and_generated_historical_in
     assert unchanged["version"] == series["version"] + 1
 
 
-async def test_second_split_checks_preserved_predecessor_segments(
+async def test_repeated_predecessor_split_is_atomic_and_leaf_successor_can_split(
+    client: httpx.AsyncClient,
+) -> None:
+    first = (datetime.now(UTC) + timedelta(days=185)).replace(microsecond=0)
+    original = (await client.post("/api/v1/series", json=_series_payload(first))).json()
+    original_notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    original_notes = sorted(
+        (note for note in original_notes if note["series_id"] == original["id"]),
+        key=lambda note: note["recurrence_key"],
+    )
+    first_payload = {
+        **_series_payload(first + timedelta(days=1), title="First successor"),
+        "recurrence_key": original_notes[1]["recurrence_key"],
+        "expected_version": original["version"],
+        "expected_occurrence_version": original_notes[1]["version"],
+    }
+    first_split = await client.post(f"/api/v1/series/{original['id']}/split", json=first_payload)
+    assert first_split.status_code == 200, first_split.text
+    successor = first_split.json()
+
+    async def lineage_state() -> tuple[int, int, int]:
+        async with async_engine.connect() as connection:
+            row = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT count(DISTINCT rs.id),
+                               count(n.id),
+                               count(n.id) - count(DISTINCT n.recurrence_key)
+                        FROM recurrence_series rs
+                        LEFT JOIN notes n
+                          ON n.series_id = rs.id AND n.superseded_at IS NULL
+                        WHERE rs.lineage_id = :lineage_id
+                        """
+                    ),
+                    {"lineage_id": original["lineage_id"]},
+                )
+            ).one()
+        return row[0], row[1], row[2]
+
+    before_retry = await lineage_state()
+    repeated = await client.post(f"/api/v1/series/{original['id']}/split", json=first_payload)
+    assert repeated.status_code == 409, repeated.text
+    assert repeated.json()["code"] == "series_not_leaf"
+    assert repeated.json()["current"]["successor_id"] == successor["id"]
+    assert await lineage_state() == before_retry
+    assert before_retry[2] == 0
+
+    successor_notes = (await client.get("/api/v1/notes", params={"page_size": 100})).json()["items"]
+    successor_notes = sorted(
+        (note for note in successor_notes if note["series_id"] == successor["id"]),
+        key=lambda note: note["recurrence_key"],
+    )
+    leaf_boundary = datetime.fromisoformat(successor_notes[1]["recurrence_key"])
+    leaf_payload = {
+        **_series_payload(leaf_boundary, title="Second successor"),
+        "recurrence_key": successor_notes[1]["recurrence_key"],
+        "expected_version": successor["version"],
+        "expected_occurrence_version": successor_notes[1]["version"],
+    }
+    second_split = await client.post(f"/api/v1/series/{successor['id']}/split", json=leaf_payload)
+    assert second_split.status_code == 200, second_split.text
+    assert second_split.json()["predecessor_id"] == successor["id"]
+    assert second_split.json()["lineage_id"] == original["lineage_id"]
+    final_state = await lineage_state()
+    assert final_state[0] == 3
+    assert final_state[2] == 0
+
+
+async def test_leaf_split_backward_shift_collision_is_atomic(
     client: httpx.AsyncClient,
 ) -> None:
     first = (datetime.now(UTC) + timedelta(days=190)).replace(microsecond=0)
