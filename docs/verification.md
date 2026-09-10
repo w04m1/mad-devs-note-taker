@@ -28,7 +28,7 @@ The workstream command details and measured results are in the [QA log](developm
 - The deterministic scale phase loaded exactly 10,000 notes and emitted retained JSON `EXPLAIN (ANALYZE, BUFFERS)` plans. The final main-branch `./scripts/test.sh` recorded calendar 0.087 ms, trigram search 17.06 ms, tag filter 6.473 ms, and trash 0.365 ms; all were below the gate's 500 ms regression ceiling.
 - The isolated Playwright audit installed from its frozen lockfile, passed `tsc --noEmit`, and passed all six Chromium scenarios in 40.7 seconds. It covers cross-context realtime and Upcoming transitions, notification delivery/deduplication through Mailpit and Redis, timezone-sensitive calendar drag, stale-edit conflict handling, recurrence edit/delete/split, and cross-context trash/restore.
 
-The final main-branch `./scripts/test.sh` did not rerun `./scripts/test-recovery.sh` or the Playwright suite. Recovery and E2E claims above remain limited to their existing committed logs.
+After the final correctness integration, the root reran `./scripts/test-recovery.sh` successfully and reran all six Playwright scenarios on a fresh isolated stack: 6 passed in 37.4 seconds. After the final lineage fix, the focused isolated PostgreSQL/service gate passed 28 selected tests with zero skips and the recurrence Playwright scenario passed again in 4.2 seconds. `./scripts/smoke.sh` then passed with seven healthy long-lived services and a completed migration.
 
 ## Manual integrated evidence
 

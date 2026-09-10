@@ -16,5 +16,9 @@ Each workstream owns one log file in this directory. Entries record significant 
 | Frontend features | [`frontend-features.md`](frontend-features.md) |
 | Frontend calendar/recurrence | [`frontend-calendar.md`](frontend-calendar.md) |
 | Contract hardening | [`contract-hardening.md`](contract-hardening.md) |
+| Final correctness | [`final-correctness.md`](final-correctness.md) |
+| Linear recurrence lineage | [`lineage-fix.md`](lineage-fix.md) |
+| End-to-end scenarios | [`e2e.md`](e2e.md) |
+| QA and performance evidence | [`qa.md`](qa.md) |
 
-The index lists logs present on this branch only. Evidence from an active worktree is not final until its log and changes are reviewed and merged.
+All listed logs are merged on this branch. Verification claims remain limited to the evidence and explicit boundaries in each log.

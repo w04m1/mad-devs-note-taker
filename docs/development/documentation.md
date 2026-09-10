@@ -70,3 +70,10 @@
 - **Reason:** The final recurrence and DST hardening increased both backend and frontend coverage after the earlier 17/17/25 result. Keeping the older counts as the current result would understate the tested main branch.
 - **Evidence:** The completed root gate built both images before testing and ran the safe, isolated service/migration/scale, frontend unit, and frontend build phases successfully.
 - **Limit:** `./scripts/test.sh` does not invoke `./scripts/test-recovery.sh` or `tests/e2e/run.sh`. This reconciliation does not claim a new recovery or Playwright rerun; those claims remain tied to the existing committed QA and E2E logs.
+
+## 2026-09-10T00:49:17Z — Close final lineage and verification evidence
+
+- **Decision:** Record the open-tip-only recurrence lineage invariant as implemented and promote only checks rerun after its merge.
+- **Reason:** A post-integration review found that a closed predecessor could still branch into a sibling successor. Completion required the focused fix, independent re-review, and affected PostgreSQL/browser reruns.
+- **Evidence:** Commit `152464b`; independent review reported no remaining critical/high issue; `scripts/test-postgres.sh` passed 28 selected tests with zero skips; the recurrence Playwright scenario passed in 4.2 seconds. Before this final fix, the combined main also passed `scripts/test.sh`, `scripts/test-recovery.sh`, all six Playwright scenarios in 37.4 seconds, and `scripts/smoke.sh`.
+- **Limit:** The focused recurrence E2E exercises one valid edit/delete/split path. It does not replace the PostgreSQL branching, collision, and atomicity regressions.
