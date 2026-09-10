@@ -16,5 +16,39 @@ export default defineConfig({
       "/ws": { target: proxyTarget, ws: true },
     },
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (!id.includes("/node_modules/")) return;
+          if (id.includes("/node_modules/@fullcalendar/")) return "calendar";
+          if (
+            id.includes("/node_modules/react/") ||
+            id.includes("/node_modules/react-dom/") ||
+            id.includes("/node_modules/react-router/") ||
+            id.includes("/node_modules/react-router-dom/") ||
+            id.includes("/node_modules/scheduler/") ||
+            id.includes("/node_modules/@tanstack/")
+          )
+            return "framework";
+          if (
+            id.includes("/node_modules/react-hook-form/") ||
+            id.includes("/node_modules/@hookform/") ||
+            id.includes("/node_modules/zod/")
+          )
+            return "forms";
+          if (
+            id.includes("/node_modules/@radix-ui/") ||
+            id.includes("/node_modules/lucide-react/") ||
+            id.includes("/node_modules/class-variance-authority/") ||
+            id.includes("/node_modules/clsx/") ||
+            id.includes("/node_modules/tailwind-merge/")
+          )
+            return "ui";
+          if (id.includes("/node_modules/luxon/")) return "dates";
+        },
+      },
+    },
+  },
   test: { environment: "jsdom", setupFiles: "./src/test/setup.ts" },
 });

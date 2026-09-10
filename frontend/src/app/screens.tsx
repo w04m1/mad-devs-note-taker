@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { lazy, Suspense, useEffect, useState, type FormEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { DateTime } from "luxon";
@@ -63,7 +63,6 @@ import {
   settingsFormSchema,
   tagFormSchema,
 } from "../forms/schemas";
-import { CalendarView } from "../features/calendar/calendar-view";
 import { UpcomingView } from "../features/upcoming/upcoming-view";
 import {
   SeriesForm,
@@ -81,6 +80,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "../components/ui/dialog";
+
+const CalendarView = lazy(async () => {
+  const module = await import("../features/calendar/calendar-view");
+  return { default: module.CalendarView };
+});
 
 function Screen({
   title,
@@ -194,10 +198,12 @@ export function CalendarScreen() {
       ) : settings.isError ? (
         <ErrorMessage error={settings.error} />
       ) : (
-        <CalendarView
-          timezone={settings.data.timezone}
-          tags={tags.data ?? []}
-        />
+        <Suspense fallback={<Loading label="Loading calendar…" />}>
+          <CalendarView
+            timezone={settings.data.timezone}
+            tags={tags.data ?? []}
+          />
+        </Suspense>
       )}
     </Screen>
   );
