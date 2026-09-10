@@ -106,14 +106,21 @@ interleaving is considered fully characterized.
   interpolates `.env`, but unexported shell expansions in both scripts fall back
   to `notetaker`. The scripts can fail while reporting success, stop services, or
   act on a different default-named database.
-- **FA-H-MIGRATION-GATE · High — migration checks are bypassed on restart and
-  restore.** Compose
+- **FA-H-MIGRATION-GATE · High blocker — image transitions and post-restore
+  starts can bypass the schema gate.** Compose
   `depends_on: migrate: condition: service_completed_successfully` is creation
-  ordering, not a per-start gate. `docker compose restart` does not rerun migrate;
-  restore starts writers directly; readiness checks only `SELECT 1`; and
-  worker/Beat do not check Alembic head. The accepted v1 gate is an exact
-  `alembic current --check-heads`-equivalent before every writer starts, rather
-  than a new capability subsystem.
+  ordering, not an activation gate for a changed application image, and restore
+  starts writers directly. Readiness checks only `SELECT 1`; worker/Beat do not
+  check Alembic head. Before writers start after an image transition or restore,
+  the accepted v1 blocker gate is an exact
+  `alembic current --check-heads`-equivalent rather than a new capability
+  subsystem.
+- **FA-M-SAME-IMAGE-SCHEMA-RECHECK · Medium non-blocker — a routine same-image
+  restart does not recheck the Alembic head.** `docker compose restart` does not
+  rerun migrate or a head check. This is a resilience/diagnostic gap for an image
+  and database already admitted by the activation gate; it is not a release
+  blocker and does not require making every routine restart depend on a new
+  migration job.
 
 ### 2. Recurring Trash persistence and API projection
 
@@ -182,10 +189,10 @@ purged notes, while retaining only non-public technical lineage/collision marker
   later that row was 61 seconds old and was marked missed without enqueue. A drain
   cannot terminate based only on claim count because a full processed batch can
   contain zero claims.
-- **Medium — cleanup cannot meet 30 days plus one interval under backlog.** One
-  hourly call purges one batch of 100. With 205 eligible and one recent note, one
-  actual call purged 100 and left 105 eligible; a 10,000-row portion could take
-  roughly 100 runs.
+- **FA-H-CLEANUP-BACKLOG · High blocker — cleanup cannot meet 30 days plus
+  one interval when more than 100 rows are eligible.** One hourly call purges one
+  batch of 100. With 205 eligible and one recent note, one actual call purged 100
+  and left 105 eligible; a 10,000-row portion could take roughly 100 runs.
 - **FA-H-RECIPIENT-AUTH · High — reminder authorization can send content to an
   obsolete email.**
   Authorization reads Settings without a lock. A deterministic barrier let PATCH
@@ -193,8 +200,8 @@ purged notes, while retaining only non-public technical lineage/collision marker
   the note content to the removed address. The send cannot be recalled. Recipient
   authorization must serialize with Settings changes in the documented lock
   order; this is a local privacy/integrity defect, not a remote-auth exploit.
-- **FA-H-ERROR-SECRETS · High — persisted raw failure text can retain secrets
-  indefinitely.** SMTP and
+- **FA-M-ERROR-SECRETS · Medium — persisted raw failure text can retain
+  secrets indefinitely.** SMTP and
   Redis exception strings are copied, merely truncated to 4,000 characters, into
   `ReminderDelivery.error` and `OutboxEvent.last_error`. Canary tests retained
   recipient, note text, credentials, and tokens through purge/maintenance. Replace
@@ -226,8 +233,8 @@ behaviors are not defects.
 
 ### 5. Realtime delivery and reconciliation
 
-- **FA-H-REALTIME-RESYNC · High — realtime lacks reliable degraded/startup
-  resynchronization.** Open
+- **FA-M-REALTIME-RESYNC · Medium — realtime lacks reliable
+  degraded/startup resynchronization.** Open
   sockets can remain silently stale during Redis outage; late joiners receive no
   initial degraded signal; startup can accept a socket before subscription; and
   focus/readiness does not force an authoritative refetch of fresh-but-wrong
@@ -252,13 +259,14 @@ entry into and recovery from degraded/live epochs, not the absence of replay.
   proof: both opened v1; A saved v2; B's mounted dirty inputs survived realtime
   refetch but submit read the new prop version 2; B received 200/v3 and replaced
   A's value. This is a real local-profile data-integrity defect.
-- **Medium — stale “this and future” intent can erase a newer exception.** Both
-  `SeriesForm` and Calendar fetch the newest series token only at submit/scope
+- **FA-H-FUTURE-SPLIT-STALE-INTENT · High blocker — stale “this and future”
+  intent can erase a newer exception.** Both `SeriesForm` and Calendar fetch the
+  newest series token only at submit/scope
   confirmation. Two-context proofs showed A opening/dragging under v1, B creating
   an occurrence exception and v2, then A fetching v2 and successfully splitting.
   B's exception/title disappeared. The warning did not authorize changes made
-  after A accepted it. Severity is bounded because this operation explicitly
-  replaces future exceptions, but the concurrency promise is still broken.
+  after A accepted it. This violates the concurrency promise and can silently
+  overwrite later-authored future-series state.
 - **Medium — same-tick admission and pending/cancel guards are incomplete.** A
   temporary component suite proved two requests can be admitted for note create,
   series create, tag create, Activate, Trash, and Restore, and that Note/Series
@@ -283,8 +291,9 @@ entry into and recovery from degraded/live epochs, not the absence of replay.
 
 ### 7. Upcoming, timezones, and browser/server time interpretation
 
-- **Medium — Upcoming exposes only the first shared page.** The backend intentionally
-  applies one `page/page_size` to Today/week/past. The client sends no page value;
+- **FA-H-UPCOMING-PAGINATION · High blocker — Upcoming makes records beyond
+  the first 50 unreachable.** The backend intentionally applies one
+  `page/page_size` to Today/week/past. The client sends no page value;
   the view renders `.items`, labels `items.length`, and has no shared pager. More
   than 50 records in any group are unreachable. The correction is one shared
   pager sized from the maximum group total. Do not add independent group pages,
