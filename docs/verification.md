@@ -2,6 +2,8 @@
 
 This page separates checks run on the original documentation baseline from later committed automated evidence. A command passing proves only what that command exercises.
 
+**Audit status:** Discovery on application baseline `defa868` is frozen with unresolved release blockers. No remediation has begun. A pass does not rebut a confirmed defect outside that check's scope. See the [functional audit ledger](development/functional-audit.md).
+
 ## Original baseline checks (2026-09-09)
 
 Run from repository revision `26257ff` before the documentation commits:
@@ -17,11 +19,11 @@ Run from repository revision `26257ff` before the documentation commits:
 
 The backend test run used Python 3.12.10. The frontend run used pnpm 11.21.0 and Vite 8.2.2.
 
-## Committed automated evidence
+## Historical committed automated evidence (pre-functional-audit)
 
 The workstream command details and measured results are in the [QA log](development/qa.md) and [E2E log](development/e2e.md). The later final main-branch reconciliation is recorded in the [documentation decision log](development/documentation.md).
 
-- The final main-branch `./scripts/test.sh` passed 18 safe backend tests with 27 deselected, then 27 isolated PostgreSQL/real-service tests with 18 deselected and zero skips. Its service phase passed the `0001` → head, head → `0001` → head, head → base → head migration cycles and `alembic check`. The frontend phase passed 30 tests across 12 files and the production build. Both images were built before tests, so the command did not reuse a stale application image.
+- The “final main-branch” historical workstream label below is not an audit-closure or release-readiness claim. That `./scripts/test.sh` run passed 18 safe backend tests with 27 deselected, then 27 isolated PostgreSQL/real-service tests with 18 deselected and zero skips. Its service phase passed the `0001` → head, head → `0001` → head, head → base → head migration cycles and `alembic check`. The frontend phase passed 30 tests across 12 files and the production build. Both images were built before tests, so the command did not reuse a stale application image.
 - The real-service gate exercised the production SMTP sender against Mailpit and proved that a repeated delivery task leaves one message and one terminal `sent` row. It also exercised a real Celery worker through Redis and two uvicorn processes receiving one event through real Redis Pub/Sub.
 - PostgreSQL concurrency tests proved single-winner authorization and the two permitted authorization-versus-delete outcomes. Deterministic tests also cover expired-lease recovery and classification of committed `attempt_started` work as `unknown`.
 - `./scripts/test-recovery.sh` passed isolated PostgreSQL and Redis restart persistence and PostgreSQL logical dump, database replacement, restore, and row verification.
@@ -36,11 +38,27 @@ The integration log records a fresh-volume stack run with migrations through `00
 
 A separate manual integrated check created note `ce69ad83-9f4c-4b47-b4d2-58f184cebf09` through the frontend proxy. Beat and the worker processed its due reminder. Mailpit contained exactly one message to `demo@example.test`, with stable `Message-ID` `24325b70-0336-4c8b-af5a-f414704229f9.1@notetaker.local`. Persistent notification `7d0d7910-745e-4a22-b441-18bb3fcda6cf` matched that delivery. The source record is [`docs/development/integration.md`](development/integration.md). This manual result supplements rather than substitutes for the automated SMTP evidence above.
 
-## Explicit verification limits
+## Functional-audit evidence (2026-09-10)
 
-- PostgreSQL and SMTP do not provide exactly-once receipt. The application promises at most one SMTP attempt. A worker was not SIGKILLed at every instruction boundary or specifically after Mailpit accepted `DATA`.
-- Redis outage `resync_required` behavior is unit-tested but has not been black-box tested during an open connection. Live multi-process fanout is verified; replay across an outage is not claimed.
-- Authorization was raced against note deletion, but not recurrence split or retention cleanup. Full application availability during a service outage is not covered by the isolated restart/persistence gate.
-- The 500 ms query ceiling is a host-sensitive regression tripwire, not a latency SLO. Hardware percentiles and materialization of exactly 10,000 recurrence occurrences are not claimed.
-- Browser E2E is Chromium-only, serial, and destructive within its isolated Compose project. Duplicate-toast observation is bounded to 600 ms, and scheduled-delivery polling does not simulate prolonged retries or broker outages.
-- Full TypeScript DTO generation from OpenAPI is not present. Focused OpenAPI shape tests cover high-risk endpoints only.
+The [functional audit ledger](development/functional-audit.md) records exact commands, artifacts, and boundaries.
+
+| Check or reproduction | Fresh result and boundary |
+|---|---|
+| Exact-baseline `./scripts/test.sh` | 18 safe backend and 28 isolated PostgreSQL/real-service tests passed; 30 frontend tests in 12 files and the build passed. The main chunk was 795.00 kB (240.68 kB gzip), with the expected warning. |
+| Selected real-service gate | 9 PostgreSQL/Redis/Celery/Mailpit tests passed in a fresh isolated project. |
+| Fresh isolated E2E | 6 Chromium scenarios passed in 36.3 seconds; the complete wrapper took 81.6 seconds. |
+| Exactly-10,000 materialization | Warm median was 15.740 seconds without offsets and 99.940 seconds with all three offsets (89.061–105.497-second range). Writes were atomic and concurrent reads stayed responsive; performance is blocking without an owner exception. |
+| Realtime outage | An existing socket signaled degradation but stayed open; a late socket lacked the initial signal; readiness stayed 200; a durable mutation was unseen for 32.012 seconds before recovery resync. |
+| Backup/restore negative pipelines | Shell reproductions showed upstream dump/decompression failures can be masked by the last successful pipeline member. |
+| Deployment-negative checks | Initial failed migration blocked dependents, but later direct restarts bypassed migration gating and frontend health masked a proxied API failure. |
+| Beat wedge | PID health remained healthy while Beat was stopped for 46.6 seconds and during Redis loss, despite scheduler progress failure. |
+
+## Current evidence boundaries
+
+- PostgreSQL and SMTP do not provide exactly-once receipt; the product boundary is at most one application SMTP attempt.
+- Chromium E2E is serial and destructive only inside its isolated project.
+- Historical query-plan timings are host-sensitive regression tripwires, not an API/UI latency SLO.
+- The historical recovery gate proves its isolated dump/replace/load primitive. It bypasses the defective public backup and restore pipelines and does not validate them.
+- The ledger's [evidence-only gaps](development/functional-audit.md#evidence-only-gaps) and [refuted findings and allowed limits](development/functional-audit.md#refuted-findings-and-allowed-limits) are authoritative for the remaining boundaries.
+
+There is no remediation build and no post-remediation verification record.

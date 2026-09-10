@@ -1,4 +1,6 @@
-# Final documentation decision log
+# Documentation decision log
+
+The 2026-09-09 entries below are historical decisions and evidence records. They do not state current completeness or release readiness.
 
 ## 2026-09-09 — Separate the plan from implementation status
 
@@ -48,14 +50,14 @@
 - **Decision:** Record automated production-path SMTP/Mailpit, Celery/Redis, and multi-process WebSocket fanout as verified rather than pending. Also record the single-winner and authorization-versus-delete race results.
 - **Reason:** The isolated service gate exercises these boundaries directly and fails on a skipped selected test.
 - **Evidence:** `docs/development/qa.md` records 17 service tests passed with zero skips. A repeated production `deliver` call left one Mailpit message and one `sent` row; a real worker committed work sent through Redis; two uvicorn processes received the same Redis event.
-- **Limit:** The gate does not SIGKILL workers at each instruction boundary. Redis outage behavior is not black-box tested on an open socket. Authorization has not been raced against recurrence split or retention cleanup.
+- **Limit:** The gate did not SIGKILL workers at each instruction boundary. Its scope did not include open-socket Redis outage or recurrence/retention races; the later functional audit separately reproduced Redis degradation and selected recurrence/retention defects.
 
 ## 2026-09-09 — Record recovery and deterministic scale results
 
 - **Decision:** Replace the general pending restart/performance statements with the exact automated results that are committed.
 - **Reason:** The recovery and query-plan gates now have final isolated records, but their narrower boundary must not be inflated into full outage or latency claims.
 - **Evidence:** `./scripts/test-recovery.sh` preserved PostgreSQL and Redis sentinels across restart and verified a PostgreSQL logical dump/replace/restore cycle. The scale gate loaded exactly 10,000 deterministic notes and retained analyzed JSON plans for calendar, trigram search, tag filter, and trash; all recorded execution times were below 500 ms.
-- **Limit:** Recovery does not prove full application availability during outage or a worker kill after Mailpit accepts `DATA`. The 500 ms ceiling is a host-sensitive regression tripwire, not an SLO; hardware percentiles and 10,000-occurrence recurrence materialization remain unclaimed.
+- **Limit:** Recovery does not prove full application availability during outage or a worker kill after Mailpit accepts `DATA`. The 500 ms ceiling is a host-sensitive regression tripwire, not an SLO. That historical gate did not measure 10,000-occurrence recurrence materialization; the later functional audit did.
 
 ## 2026-09-09 — Treat manual DST overlap selection as implemented
 
@@ -64,16 +66,23 @@
 - **Evidence:** `docs/development/contract-hardening.md` and `docs/development/final-correctness.md` record the implementation and focused tests for the Budapest gap and overlap, including selection of the second `+01:00` occurrence.
 - **Limit:** Spring-forward gaps remain rejected by design; this decision does not alter recurrence expansion semantics.
 
-## 2026-09-09 — Reconcile the final main-branch complete gate
+## 2026-09-09 — Record the historical main-branch test gate
 
 - **Decision:** Update the public record from the older QA-log snapshot to the just-completed main-branch `./scripts/test.sh`: 18 safe backend tests passed with 27 deselected; 27 PostgreSQL/real-service tests passed with 18 deselected and zero skips; all migration cycles and `alembic check` passed; 30 frontend tests across 12 files and the production build passed. Record the same run's query times exactly: calendar 0.087 ms, trigram search 17.06 ms, tag filter 6.473 ms, and trash 0.365 ms.
 - **Reason:** The final recurrence and DST hardening increased both backend and frontend coverage after the earlier 17/17/25 result. Keeping the older counts as the current result would understate the tested main branch.
 - **Evidence:** The completed root gate built both images before testing and ran the safe, isolated service/migration/scale, frontend unit, and frontend build phases successfully.
 - **Limit:** `./scripts/test.sh` does not invoke `./scripts/test-recovery.sh` or `tests/e2e/run.sh`. This reconciliation does not claim a new recovery or Playwright rerun; those claims remain tied to the existing committed QA and E2E logs.
 
-## 2026-09-10T00:49:17Z — Close final lineage and verification evidence
+## 2026-09-10T00:49:17Z — Record the historical lineage fix and verification evidence
 
 - **Decision:** Record the open-tip-only recurrence lineage invariant as implemented and promote only checks rerun after its merge.
 - **Reason:** A post-integration review found that a closed predecessor could still branch into a sibling successor. Completion required the focused fix, independent re-review, and affected PostgreSQL/browser reruns.
 - **Evidence:** Commit `152464b`; independent review reported no remaining critical/high issue; `scripts/test-postgres.sh` passed 28 selected tests with zero skips; the recurrence Playwright scenario passed in 4.2 seconds. Before this final fix, the combined main also passed `scripts/test.sh`, `scripts/test-recovery.sh`, all six Playwright scenarios in 37.4 seconds, and `scripts/smoke.sh`.
 - **Limit:** The focused recurrence E2E exercises one valid edit/delete/split path. It does not replace the PostgreSQL branching, collision, and atomicity regressions.
+
+## 2026-09-10 — Freeze the functional audit without remediation
+
+- **Decision:** Freeze discovery on application baseline `defa868`. Treat the [functional audit ledger](functional-audit.md) as authoritative for current findings, dependencies, and acceptance contracts. Public status must say the audited implementation is not release-ready.
+- **Reason:** The final audit reconciled 15 unresolved release blockers. Historical passing checks remain evidence only for the scope they exercised.
+- **Evidence:** The ledger records fresh exact-baseline checks, negative reproductions, browser and real-service runs, materialization measurements, and retained artifacts.
+- **Limit:** No implementation remediation or post-remediation gate has occurred. Remediation remains open.

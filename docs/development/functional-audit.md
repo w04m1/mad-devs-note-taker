@@ -2,8 +2,9 @@
 
 ## Status and scope
 
-This is an **ongoing audit**, not a closure report or a remediation log. The audited
-baseline is exact revision
+Discovery is **frozen** for this audit; remediation remains open. This is not a
+closure report or a remediation log, and the audited implementation is **not
+release-ready**. The audited baseline is exact revision
 `defa868561e075afcd35a6b1ddf4af1bd36dd120` (`docs: finalize verification and
 decision log index`). The findings below reconcile the requirement reviews,
 targeted source reviews, disposable PostgreSQL and Compose checks, and two-browser
@@ -98,6 +99,15 @@ archive nor a retained driver independently proves that a command ran or produce
 the result recorded above. See `SENSITIVE-LOCAL-WARNING.md` before handling the
 archive.
 
+A PostgreSQL 16.14 DDL prototype compiled and exercised the proposed Trash action
+seal, membership, deferred-FK, negative, concurrency, and 10,000-member paths. It
+is **feasibility evidence only**, not implementation or remediation. The retained
+report is:
+
+```
+/home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-fa97e460/01a089d2-3cdb-754e-8612-172e2c815e08/audit-results.md
+```
+
 The audit also inspected generated OpenAPI, Compose configuration, Alembic head,
 E2E output, and source paths. The generated
 `tests/e2e/artifacts/results/.last-run.json` output was inspected but not retained.
@@ -131,6 +141,31 @@ The ordering below expresses remediation dependencies, not an implementation pla
 “Confirmed” includes reproduced behavior and direct contract/code contradictions.
 Some edge-risk items still need a deterministic regression test before their exact
 interleaving is considered fully characterized.
+
+### Frozen release-blocker map
+
+There are exactly **15 unresolved release blockers: 1 Critical, 13 High, and 1
+Medium blocking absent an owner-approved exception**. No performance exception is
+recorded. Detailed findings and binding contracts remain below; this map is the
+concise release gate.
+
+| Severity and stable ID | Owner | Prerequisite | Objective acceptance |
+|---|---|---|---|
+| Critical · `FA-C-RESTORE-ATOMICITY` | Operations/recovery | Correct target selection and schema activation gate | Corrupt/truncated and mid-SQL failures preserve the old database and service state; a valid restore commits once, verifies head, and starts writers. |
+| High · `FA-H-BACKUP-INTEGRITY` | Operations/recovery | Correct target selection | Forced `pg_dump`/compression/write failures return nonzero, publish no final archive, and a successful archive passes integrity and restore validation. |
+| High · `FA-H-DB-TARGET` | Operations/configuration | One Compose-compatible environment loader | `.env`-only database/user overrides select the intended database for backup and restore; mismatch fails before stop or mutation. |
+| High · `FA-H-MIGRATION-GATE` | Deployment/backend | Exact Alembic-head check | Changed-image and post-restore starts keep all writers blocked on failed/old/ahead schema and admit them only at the expected single head. |
+| High · `FA-H-TRASH-IDENTITY` | Storage migration, Trash API/UI, retention | Frozen full-outage `0004_storage_contract` and lock order | PostgreSQL/API/UI matrix proves immutable action membership, two actions as two stable cards, all-or-none adapters/restores, legacy compatibility, exact expiry, and no partial state under cleanup or races. |
+| High · `FA-H-SUPERSEDED-GHOST` | Note lifecycle, reminders, storage migration | Public visibility predicate and `0004` ghost repair | Split-produced and purged IDs return uniform 404 for direct reads/mutations; reconciliation/authorization sends nothing; migration repairs ghosts, deliveries, and false exceptions without changing ordinary deleted notes. |
+| High · `FA-H-PURGE-REDACTION` | Retention/storage/API | Per-segment seal/redaction rules | After the last restorable member expires, exact user content and associations are absent from database and APIs while a live segment control remains intact. |
+| High · `FA-H-REMINDER-BACKLOG` | Reminder scheduler | Drain-until-no-eligible-work algorithm | More than one batch, including a row at the grace cutoff, is processed in one invocation without eligible work becoming missed; rerun is idempotent. |
+| High · `FA-H-CLEANUP-BACKLOG` | Retention/maintenance | Frozen action membership and expiry rules | One invocation drains 10,000 eligible rows/actions, never partly purges an action larger than a batch, preserves an ineligible control, and is idempotent. |
+| High · `FA-H-RECIPIENT-AUTH` | Settings/reminder authorization | Documented shared lock order | Deterministic Settings-change races either use the currently authorized address or cancel; no removed recipient receives content and no deadlock occurs. |
+| High · `FA-H-FUTURE-SPLIT-STALE-INTENT` | Recurrence API and Note/Calendar UI | Stable intent-time series token | Two-client Note and Calendar cases reject intent made before a newer exception; explicit reload/reapply succeeds without erasing that exception. |
+| High · `FA-H-UPCOMING-PAGINATION` | Upcoming API/UI | Frozen shared-page contract | Browser/API tests with more than 50 items per group reach every record through one shared pager with stable totals, boundaries, and empty out-of-range pages. |
+| High · `FA-H-TIMEZONE-RACE` | Settings and date/time forms | Authoring-zone readiness and draft pinning | Delayed/changed Settings cannot alter an authored instant; unchanged timestamps preserve precision/fold and gap/overlap cases follow the frozen rule. |
+| High · `FA-H-BEAT-HEALTH` | Beat/operations | Beat-owned successful-publish freshness signal | Health becomes unhealthy within the documented bound for `SIGSTOP` and broker loss, recovers after successful Beat publication, and cannot be refreshed by another service. |
+| Medium/blocking · `FA-M-10K-MATERIALIZATION` | Recurrence/backend and performance owner | Preserve the 10,000 cap and atomic transaction | On documented hardware, 0/3-offset 10k runs meet an owner-approved distribution gate with exact counts, rollback, responsive reads, and retained artifacts; otherwise an explicit exception or fully tested async contract is required. |
 
 ### 1. Recovery and schema gates
 
@@ -773,9 +808,9 @@ target.
 
 ## Exit condition
 
-The audit remains open. Before calling it closed, reconcile any later specialist
-reports into this ledger, apply the resolved concurrency-field compatibility
-contract, agree remediation scope and acceptance tests, implement fixes in
-dependency order, and rerun the appropriate isolated recovery,
-PostgreSQL/service, frontend, browser, scale, and smoke gates. None of that
-remediation has begun in this workstream.
+Discovery is frozen at the baseline and blocker map above. Remediation remains
+open. Release readiness requires implementing every blocker in dependency order
+(or recording an owner-approved performance exception for
+`FA-M-10K-MATERIALIZATION`) and passing the applicable isolated recovery,
+PostgreSQL/service, frontend, browser, scale, and smoke gates. No implementation
+remediation or post-remediation verification has begun in this workstream.

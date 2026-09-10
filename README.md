@@ -2,9 +2,11 @@
 
 Notetaker is a local, unauthenticated, single-profile note and reminder application. It has a React/TypeScript frontend, a FastAPI backend, PostgreSQL persistence, Redis/Celery background work and realtime invalidation, and Mailpit for local email capture.
 
+**Audit status:** The functional audit of application baseline `defa868` is frozen with unresolved release blockers. No remediation has begun, and the audited implementation is not release-ready. See the [functional audit ledger](docs/development/functional-audit.md). Earlier passing checks remain historical evidence only for the scope they exercised.
+
 See [implementation status](docs/implementation-status.md) for the current scope and known limits. See [verification](docs/verification.md) for evidence and the exact boundary of each check. `PLAN.md` is the design plan, not a record that every planned check passed.
 
-## Start the complete stack
+## Start the stack
 
 Prerequisites: Docker Engine 27+, Docker Compose v2.24+, at least 4 GB free memory and 5 GB free disk, and `curl`. No host Python, Node.js, PostgreSQL, or Redis install is required.
 
