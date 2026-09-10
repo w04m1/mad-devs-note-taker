@@ -11,6 +11,7 @@ import { Checkbox } from "../../components/ui/checkbox";
 import { Switch } from "../../components/ui/switch";
 import { RadioGroup, RadioGroupItem } from "../../components/ui/radio-group";
 import { DateTimePicker } from "../../components/date-time-picker";
+import { TagPicker } from "../../components/tag-picker";
 import { AlertTriangle, Clock3, Save } from "lucide-react";
 
 type Draft = {
@@ -266,27 +267,14 @@ export function NoteForm({
           onCheckedChange={(checked) => setDraft({ ...draft, active: checked })}
         />
       </label>
-      <fieldset className="flex flex-col gap-3">
-        <legend className="text-sm font-medium">Tags</legend>
-        <div className="flex flex-wrap gap-2">
-          {tags.map((tag) => (
-            <label
-              key={tag.id}
-              className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm shadow-sm"
-            >
-              <Checkbox
-                checked={draft.tag_ids.includes(tag.id)}
-                onCheckedChange={() => toggleTag(tag.id)}
-              />
-              <span
-                className="size-3 rounded-full"
-                style={{ backgroundColor: tag.color }}
-              />
-              {tag.name}
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Tags</span>
+        <TagPicker
+          tags={tags}
+          selectedIds={draft.tag_ids}
+          onToggle={toggleTag}
+        />
+      </div>
       <fieldset className="flex flex-col gap-3">
         <legend className="text-sm font-medium">Reminders</legend>
         <div className="flex flex-wrap gap-2">

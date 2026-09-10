@@ -81,6 +81,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { DateTimePicker } from "../components/date-time-picker";
+import { TagPicker } from "../components/tag-picker";
 
 const CalendarView = lazy(async () => {
   const module = await import("../features/calendar/calendar-view");
@@ -388,36 +389,23 @@ export function NotesScreen() {
             </SelectContent>
           </Select>
         </Field>
-        <fieldset className="flex flex-col gap-2 lg:col-span-2">
-          <legend className="text-sm font-medium">Tags · all must match</legend>
-          <div className="flex min-h-10 flex-wrap items-center gap-2 rounded-lg border bg-background px-3 py-2">
-            {tags.data?.length ? (
-              tags.data.map((tag) => (
-                <label key={tag.id} className="flex items-center gap-2 text-xs">
-                  <Checkbox
-                    checked={(params.tag_id ?? []).includes(tag.id)}
-                    onCheckedChange={() => {
-                      const current = params.tag_id ?? [];
-                      set(
-                        "tag_id",
-                        current.includes(tag.id)
-                          ? current.filter((id) => id !== tag.id)
-                          : [...current, tag.id],
-                      );
-                    }}
-                  />
-                  <span
-                    className="size-2 rounded-full"
-                    style={{ backgroundColor: tag.color }}
-                  />
-                  {tag.name}
-                </label>
-              ))
-            ) : (
-              <span className="text-xs text-muted-foreground">No tags</span>
-            )}
-          </div>
-        </fieldset>
+        <div className="flex min-w-0 flex-col gap-2 lg:col-span-2">
+          <span className="text-sm font-medium">Tags · all must match</span>
+          <TagPicker
+            label="Filter by tags"
+            tags={tags.data ?? []}
+            selectedIds={params.tag_id ?? []}
+            onToggle={(id) => {
+              const current = params.tag_id ?? [];
+              set(
+                "tag_id",
+                current.includes(id)
+                  ? current.filter((tagId) => tagId !== id)
+                  : [...current, id],
+              );
+            }}
+          />
+        </div>
         <Field label="From">
           <DateTimePicker
             label="From"
@@ -568,17 +556,30 @@ function NoteCards({
                     {note.body}
                   </p>
                 )}
-                <div className="flex flex-wrap gap-1.5">
-                  {note.tags.map((t) => (
-                    <Badge key={t.id} variant="outline">
-                      <span
-                        className="size-2 rounded-full"
-                        style={{ backgroundColor: t.color }}
-                      />
-                      {t.name}
-                    </Badge>
-                  ))}
-                </div>
+                {note.tags.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {note.tags.slice(0, 8).map((t) => (
+                      <Badge key={t.id} variant="outline" className="gap-1.5">
+                        <span
+                          className="size-2.5 shrink-0 rounded-full ring-1 ring-black/10"
+                          style={{ backgroundColor: t.color }}
+                        />
+                        {t.name}
+                      </Badge>
+                    ))}
+                    {note.tags.length > 8 && (
+                      <Badge
+                        variant="secondary"
+                        title={note.tags
+                          .slice(8)
+                          .map((tag) => tag.name)
+                          .join(", ")}
+                      >
+                        +{note.tags.length - 8} more
+                      </Badge>
+                    )}
+                  </div>
+                )}
               </CardContent>
               <CardFooter className="flex flex-wrap gap-2 border-t bg-muted/35 pt-4">
                 <Button

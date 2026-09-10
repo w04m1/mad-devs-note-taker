@@ -25,6 +25,7 @@ import {
 } from "../../components/ui/select";
 import { AlertTriangle, Clock3, Save } from "lucide-react";
 import { DateTimePicker } from "../../components/date-time-picker";
+import { TagPicker } from "../../components/tag-picker";
 
 type Draft = {
   title: string;
@@ -259,27 +260,14 @@ export function SeriesForm({
           onCheckedChange={(checked) => setDraft({ ...draft, active: checked })}
         />
       </label>
-      <fieldset className="flex flex-col gap-3">
-        <legend className="text-sm font-medium">Tags</legend>
-        <div className="flex flex-wrap gap-2">
-          {tags.map((t) => (
-            <label
-              key={t.id}
-              className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm shadow-sm"
-            >
-              <Checkbox
-                checked={draft.tag_ids.includes(t.id)}
-                onCheckedChange={() => toggleTag(t.id)}
-              />
-              <span
-                className="size-2 rounded-full"
-                style={{ backgroundColor: t.color }}
-              />
-              {t.name}
-            </label>
-          ))}
-        </div>
-      </fieldset>
+      <div className="flex flex-col gap-2">
+        <span className="text-sm font-medium">Tags</span>
+        <TagPicker
+          tags={tags}
+          selectedIds={draft.tag_ids}
+          onToggle={toggleTag}
+        />
+      </div>
       <fieldset className="flex flex-col gap-3">
         <legend className="text-sm font-medium">Reminders</legend>
         <div className="flex flex-wrap gap-2">
