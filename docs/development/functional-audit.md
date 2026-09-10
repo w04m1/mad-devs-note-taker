@@ -47,6 +47,8 @@ into PostgreSQL evidence.
 | Isolated deployment-negative projects `nt-audit-neg` and `nt-audit-bypass` | A forced migrate exit 42 made initial `docker compose up --wait --wait-timeout 90` fail and kept dependents unstarted. After a later failed migrate, `docker compose restart backend worker beat` still exited 0 and made writers/readiness healthy while `/notes` failed with `UndefinedTableError`; frontend health also masked a proxied API 502. Both projects and volumes were removed. |
 | Generated `app.openapi()` consumed with `openapi-typescript 7.13.0` | Generation completed, but the generated page item type was `unknown[]`, confirming the non-authoritative/untyped page contract rather than a tool execution failure. |
 | Targeted ASGI/domain probes plus temporary PostgreSQL race tests | Confirmed `q="a b"` is accepted with only two non-space characters; huge page values can produce 500; date-max expansion can fail; configured cap can exceed 10,000; pseudo-zones/weak email pass validation; 100 `ß` characters can expand under casefold and fail; composed/decomposed tag names can coexist; concurrent normalized tag create produced 201 + 500 and rename produced 200 + 500. Temporary resources were removed. |
+| Deterministic isolated PostgreSQL/API purge and authorization probes | A fully trashed three-occurrence series was aged 31 days and purged: all Note rows became inaccessible, but the series row retained the exact template title/body, tag and reminder-template associations, and `GET /series/{id}` returned them with count 3. A partial-series control correctly remained readable. A separate database barrier paused authorization after its unlocked Settings read; Settings PATCH committed a new email before authorization committed, yet the later SMTP call used the removed address. Temporary resources were removed. |
+| Persisted-error canary probes | Fake SMTP and Redis failures containing recipient, note text, credentials, and tokens were stored verbatim in `ReminderDelivery.error` and `OutboxEvent.last_error`. Purge and maintenance did not scrub them. They were not directly serialized by the current API, but remain exposed to database access, backups, and future diagnostics. Audit rows were removed. |
 | `http://127.0.0.1:5173` plus isolated Compose browser stacks, each with two independent Chromium contexts | Confirmed core CRUD/realtime flows, the Settings stale-draft overwrite, stale future-series and Calendar-scope overwrites, duplicate create/admission windows, and recurring-trash representation/restore behavior. Audit-created product rows were cleaned through supported APIs where possible. |
 | Fresh isolated `./tests/e2e/run.sh` | All 6 Chromium scenarios passed in 36.3 seconds (81.6 seconds for the complete wrapper). Its containers, network, and volumes were removed. |
 | Isolated Beat project `beat-audit-38506`, including `SIGSTOP` and Redis-loss probes | The PID-only health check stayed healthy while the scheduler was stopped for 46.6 seconds and its queue stopped advancing. It also stayed healthy throughout Redis loss while publish attempts blocked or failed. The isolated project and volumes were removed; the main Compose project was not touched. |
@@ -110,35 +112,38 @@ interleaving is considered fully characterized.
 
 ### 2. Recurring Trash persistence and API projection
 
-- **High — a portion deletion has no durable action identity.** The backend stores
-  only mutable `series_trashed_at`, returns 204, exposes a flat note page with no
-  deletion discriminator, and restores by an open-ended series/boundary range.
-  Two actions cannot be represented or restored independently, and pagination
-  cannot represent one portion as one item. The UI offers no recurring delete
-  scope and always restores one note.
-- **High — successor interaction destroys the saved restore unit.** A split can
-  reuse trashed future rows, overwrite their saved content, clear trash markers,
-  and remove the restorable portion. A later restore reports nothing instead of
-  the required explicit successor-overlap conflict.
-- **Medium — individual restore leaves hidden inconsistent group state.** The HTTP
-  spot check created three occurrences, trashed from occurrence two (204), and
-  restored occurrence two through the endpoint used by the UI (200). Occurrence
-  two became visible while occurrence three stayed trashed, but the restored row
-  retained `series_trashed_at`; a later series restore acted on that hidden marker.
-  This proves loss of atomic portion semantics, not permanent data loss.
+- **High — recurring Trash has no durable action/membership identity.** The
+  backend stores only mutable `series_trashed_at`, returns 204, and exposes a flat
+  note page with no deletion discriminator. Two actions cannot be represented or
+  restored independently. A split can reuse trashed rows, overwrite their saved
+  content, clear their markers, and destroy the restore unit. Individual restore
+  can also make one member visible while leaving the rest trashed and retaining a
+  hidden portion marker. These are consequences of one root defect, not separate
+  severity headlines.
+- **High — a fully purged series remains content-recoverable.** A deterministic
+  real PostgreSQL/API reproduction purged every occurrence but retained exact
+  `RecurrenceSeries.template_title`/`template_body`, `SeriesTag`, and
+  `SeriesReminderTemplate` data. `GET /series/{id}` returned 200 with those values
+  and an occurrence count of 3. A partial/live segment is a valid control and must
+  retain its template. An expired predecessor must be redacted independently even
+  when its successor remains live.
 
-A safe contract needs immutable trash-action identity and membership, grouped
-pagination, restore by action ID, and explicit overlap/version/expiry conflicts.
-Exact endpoint/schema design remains remediation work, not a change made here.
+A safe Trash contract needs immutable action identity and membership, grouped
+pagination, atomic restore by action ID, and explicit overlap/version/expiry
+conflicts. This does not require independent Upcoming pages or new canonical
+recurrence mutation routes. Erasure is decided per series segment: after its last
+visible or restorable member ages out, remove its user-authored template and
+series associations and make normal series reads/mutations return the same 404 as
+purged notes, while retaining only non-public technical lineage/collision markers.
 
 ### 3. Authoritative database snapshots and concurrency
 
-- **High — Note responses can be states that never existed.** Note scalar fields,
+- **Medium — Note responses can be states that never existed.** Note scalar fields,
   tags, and reminder offsets are read in separate READ COMMITTED statements. A
   barrier reproduction returned old scalar/tag state with a new reminder list.
   List totals can similarly disagree with items. Adding a series token as another
   independent query would worsen this.
-- **High — recurring mutation can check a stale ORM identity.** The code preloads a
+- **Medium — recurring mutation can check a stale ORM identity.** The code preloads a
   note unlocked, later selects it `FOR UPDATE` into the same SQLAlchemy identity
   map, and does not force refresh. A two-transaction reproduction showed the
   second load still returning v1 after another transaction committed v2. A
@@ -146,10 +151,15 @@ Exact endpoint/schema design remains remediation work, not a change made here.
   explicit check and was caught only by mapper flush, yielding generic 409 with no
   authoritative current resource. No silent write was observed, but the required
   conflict contract fails.
-- **Medium — repeated recurring DELETE bumps only the series.** The first DELETE
+- **Low — repeated recurring DELETE bumps only the series.** The first DELETE
   moved note/series v1 to v2. Repeating DELETE with current tokens returned 204,
   left the note at v2, and moved the series to v3 without a semantic transition or
   matching event.
+- **Low — `GET /series/{id}` takes a write lock.** The read route reuses the
+  mutation helper's `FOR UPDATE`; SQLAlchemy autobegins and holds the exclusive row
+  lock through response assembly and session teardown. It is not a leaked
+  transaction, but a read can block series/occurrence writers. Use a plain lookup
+  for GET and retain the shared lock protocol only for mutations.
 - **Medium — tag races lack stable domain errors.** Normalized create/rename is a
   precheck followed by an insert/update; a uniqueness race can escape as an
   integrity error instead of `409 tag_name_conflict`. Tag deletion after note tag
@@ -168,6 +178,18 @@ Exact endpoint/schema design remains remediation work, not a change made here.
   hourly call purges one batch of 100. With 205 eligible and one recent note, one
   actual call purged 100 and left 105 eligible; a 10,000-row portion could take
   roughly 100 runs.
+- **High — reminder authorization can send content to an obsolete email.**
+  Authorization reads Settings without a lock. A deterministic barrier let PATCH
+  commit a replacement email before authorization committed, then the worker sent
+  the note content to the removed address. The send cannot be recalled. Recipient
+  authorization must serialize with Settings changes in the documented lock
+  order; this is a local privacy/integrity defect, not a remote-auth exploit.
+- **High — persisted raw failure text can retain secrets indefinitely.** SMTP and
+  Redis exception strings are copied, merely truncated to 4,000 characters, into
+  `ReminderDelivery.error` and `OutboxEvent.last_error`. Canary tests retained
+  recipient, note text, credentials, and tokens through purge/maintenance. Replace
+  these fields with bounded allowlisted codes/types and scrub legacy values; do
+  not persist `str(exc)`, class names, URLs, provider responses, or exception args.
 - **Medium — a live SMTP worker can race unknown classification.** A worker commits
   `attempt_started`; maintenance can classify it `unknown` after 60 seconds; the
   same still-live worker can resume and send. Finalization updates only rows still
@@ -176,8 +198,8 @@ Exact endpoint/schema design remains remediation work, not a change made here.
   intact, but the recorded outcome can be false. The agreed correction treats the
   maintenance result as provisional: only the same immutable claim token that was
   already authorized may reconcile `unknown` to the observed `sent` or definitive
-  `failed` result. It must not authorize a retry or second SMTP invocation. SMTP
-  remains outside database transactions.
+  `failed` result. It must not authorize a retry or second SMTP invocation, and
+  SMTP remains outside database transactions.
 - **Medium — recovery invariants are not database constraints.** The schema permits
   `claimed` with null claim expiry and `attempt_started` with null authorization
   time. Normal code supplies both, but imported/corrupt rows can become
@@ -194,33 +216,28 @@ behaviors are not defects.
 
 ### 5. Realtime delivery and reconciliation
 
-- **High — open sockets can remain silently stale during Redis outage.** The
-  subscriber emits bounded resync signals around failure/recovery while sockets
-  remain open. The frontend fallback poll starts on WebSocket close, not on
-  degraded state, so mutations during a long Pub/Sub outage can remain unseen.
-- **High — startup/late-join race can lose invalidation.** WebSockets can be
-  accepted before Redis subscription readiness, and the first client `onopen`
-  skips invalidation. A mutation between initial HTTP read and effective
-  subscription can therefore remain stale indefinitely. Redis `PUBLISH` returning
-  zero subscribers is correctly marked published; changing that outbox rule would
-  not close this readiness/reconciliation gap.
-- **Medium/High — readiness and focus do not close the gap.** `/health/ready`
-  reports only PostgreSQL. Global focus handling relies on TanStack staleness, so
-  a fresh-but-wrong cache may not refetch. Notification dedupe is count-capped
-  rather than expiry-based and does not consistently use canonical
-  `notification_id`.
+- **High — realtime lacks reliable degraded/startup resynchronization.** Open
+  sockets can remain silently stale during Redis outage; late joiners receive no
+  initial degraded signal; startup can accept a socket before subscription; and
+  focus/readiness does not force an authoritative refetch of fresh-but-wrong
+  caches. Treat one continuously healthy subscriber connection as a live epoch.
+  Every connection needs the current availability/epoch state, and loss/recovery
+  must move clients into polling/refetch and then a new healthy epoch. History
+  refetch after recovery must not replay notification toasts.
 
-Redis Pub/Sub itself remains an allowed non-replaying transport. The defect is the
-missing reliable degraded/startup resynchronization, not the lack of replay.
+Redis Pub/Sub remains an allowed non-replaying transport. `PUBLISH == 0` is still
+successful publication because it reports current Redis subscribers, not durable
+browser acknowledgement. Only publish exceptions/timeouts retry. The defect is
+entry into and recovery from degraded/live epochs, not the absence of replay.
 
 ### 6. Settings and frontend optimistic concurrency
 
-- **High — first-use Settings initialization races.** Deterministic concurrent
+- **Medium — first-use Settings initialization races.** Deterministic concurrent
   first GET/GET and GET/PATCH probes both reached the absent singleton before
   insert. One request then escaped as a duplicate-primary-key 500; depending on
   insert order, PATCH can lose to the default row. The minimum backend correction
   is conflict-safe singleton creation followed by reselect-and-lock for PATCH.
-- **High — dirty Settings can silently overwrite another client.** Two-browser
+- **Medium — dirty Settings can silently overwrite another client.** Two-browser
   proof: both opened v1; A saved v2; B's mounted dirty inputs survived realtime
   refetch but submit read the new prop version 2; B received 200/v3 and replaced
   A's value. This is a real local-profile data-integrity defect.
@@ -231,7 +248,7 @@ missing reliable degraded/startup resynchronization, not the lack of replay.
   B's exception/title disappeared. The warning did not authorize changes made
   after A accepted it. Severity is bounded because this operation explicitly
   replaces future exceptions, but the concurrency promise is still broken.
-- **High — same-tick admission and pending/cancel guards are incomplete.** A
+- **Medium — same-tick admission and pending/cancel guards are incomplete.** A
   temporary component suite proved two requests can be admitted for note create,
   series create, tag create, Activate, Trash, and Restore, and that Note/Series
   forms can be cancelled while a write is pending. Live simultaneous requests
@@ -244,14 +261,23 @@ missing reliable degraded/startup resynchronization, not the lack of replay.
   string/raw error and do not offer the required local-vs-current comparison,
   reload-latest, and deliberate manual-reapplication flow. Quick actions also need
   stable displayed tokens and deterministic conflict refetch.
+- **Medium — Settings defaults bypass dependency injection, and Upcoming rolls
+  their lazy insert back.** `_settings()` calls cached `get_settings()` directly,
+  so request/test dependency overrides are not authoritative. `/upcoming` calls
+  the same lazy creator outside an owned transaction: it can flush and use a
+  default singleton for its response, then roll that insert back at session
+  teardown. Inject one defaults source and make initialization conflict-safe and
+  durably owned. Lazy initialization itself is allowed in this single-profile
+  product; the bypass, rollback, and first-use race are the defects.
 
 ### 7. Upcoming, timezones, and browser/server time interpretation
 
-- **High — Upcoming exposes only the first shared page.** The backend intentionally
+- **Medium — Upcoming exposes only the first shared page.** The backend intentionally
   applies one `page/page_size` to Today/week/past. The client sends no page value;
   the view renders `.items`, labels `items.length`, and has no shared pager. More
   than 50 records in any group are unreachable. The correction is one shared
-  pager; independent per-group cursors are not required.
+  pager sized from the maximum group total. Do not add independent group pages,
+  cursors, or sibling Upcoming endpoints.
 - **High — delayed or changed Settings can alter authored instants.** Note and
   Upcoming interactions are enabled before profile settings resolve. A form can
   initialize wall time in the browser/old zone and submit it using a later profile
@@ -308,16 +334,19 @@ missing reliable degraded/startup resynchronization, not the lack of replay.
   check only tests that a nonempty PID file names an existing process. It stayed
   healthy while the scheduler process was stopped and while Redis publish attempts
   blocked or failed, so it has no finite failure-detection bound for either wedge.
-  A Beat-owned freshness marker must advance only after a successful broker
-  publish; merely checking the process or worker execution does not prove scheduler
-  progress.
+  A Beat-owned local freshness file must advance only from the Beat sending
+  process after a successful broker publish; merely checking the process or worker
+  execution does not prove scheduler progress. Keep it Beat-container-local so
+  backend/worker publication cannot refresh it. A scheduled task executed by a
+  worker and a new database heartbeat table would bind health to the wrong
+  component and are not required.
 - **Medium operational — structured application logging is absent.** Application
   code does not provide the PLAN §16 correlation/redaction envelope for request
   failures, reminder recovery/missed/unknown transitions, enqueue/outbox retries
   and lag, cleanup counts, Redis subscriber state/resync, dead WebSocket fanout, or
   Celery task IDs. This does not require replacing third-party logs, tracing, or a
   metrics platform.
-- **Medium/High functional accessibility — focus and result-state management is
+- **Medium functional accessibility — focus and result-state management is
   incomplete.** Inline editor focus/return, controlled-dialog return focus,
   removal of focused rows, named filter busy/status regions, settled result-count
   announcements, field error association, and success announcements are missing
@@ -390,6 +419,15 @@ These are missing proof, not automatic functional failures:
   completion to subscriber presence. Exceptions and timeouts still retry. The
   confirmed problem is incomplete entry into and recovery from degraded/startup
   states.
+- **Allowed — purge retains minimal non-public technical facts.** Purge means
+  removal of user content plus API irrecoverability, not deletion of every row.
+  IDs, lineage/predecessor links, recurrence keys and collision-required effective
+  instants, purge/cancellation markers, and bounded delivery/outbox state and times
+  may remain when demonstrably required. User-authored/free-form fields,
+  associations, snapshots, unsafe error text, and content-bearing exception JSON
+  must not. Technical tombstones must not appear in normal APIs, counts, or
+  conflict `current` projections. Shared Tag rows remain independent resources;
+  purge removes only the purged note/segment associations.
 - **Allowed/documented deployment/test limits.** Local unauthenticated
   single-profile/no TLS, Chromium-only serial E2E, host-sensitive performance
   tripwires, and third-party logs remaining native are accepted boundaries.
@@ -400,32 +438,33 @@ These are missing proof, not automatic functional failures:
 
 ## Contract decisions
 
-The recurrence-authority decision is resolved for the local v1: add one
-backend-authoritative preview endpoint that accepts naive `local_start`, IANA
-`timezone`, and the recurrence rule. The UI uses its returned first instant in the
-existing required `starts_at` field, and the unchanged create/split mutations
-re-expand with the same pinned backend resolver and reject atomically if the value
-no longer matches. Do not add canonical sibling mutation routes or a resolver
-fingerprint now; preview is informative and the mutation remains authoritative.
+The recurrence-authority decision is resolved for local v1: add one
+side-effect-free, backend-authoritative preview endpoint that accepts naive
+`local_start`, IANA `timezone`, and the recurrence rule, and uses the same pinned
+bounded expansion code as mutation. The UI uses the previewed first instant in the
+existing required `starts_at` field; create/split still re-expand and validate it
+atomically. This is preview-only contract growth. Do not add canonical sibling
+create/split/trash/restore routes, a second browser recurrence engine, or a resolver
+fingerprint.
 
-One material interface decision remains unresolved. `docs/contracts.md` says that
-series mutations carry `expected_series_version`, while split/trash/restore
-currently accept `expected_version`. Choose one of these before remediation:
+The series mutation token name is also resolved. `expected_series_version` is
+canonical. Legacy request bodies may continue to accept `expected_version` as a
+deprecated v1 alias. If both names are supplied with equal values, accept them; if
+they differ, reject atomically with 422. Note mutation token names remain
+unchanged. An atomically observed nullable series version on every Note response
+remains additive remediation design and must not be assembled by a later,
+independent READ COMMITTED query.
 
-1. preserve the frozen external name `expected_series_version` and migrate the
-   backend and frontend; or
-2. formally amend the frozen contract to `expected_version` and record the
-   compatibility/breaking-change decision.
-
-This ledger does not select either option. A separate additive proposal to expose
-an atomically observed nullable series version on every Note representation is
-also remediation design work; its exact public field name should be reconciled
-with the decision above.
+Quantitative performance acceptance remains owner approval work. The existing
+500 ms direct-SQL check is only a host-sensitive regression tripwire. Do not claim
+API/UI percentiles, cold-start bounds, reminder burst capacity, or 10,000-row
+materialization targets until the hardware envelope, workloads, sample sizes,
+percentiles, and thresholds are approved.
 
 ## Exit condition
 
 The audit remains open. Before calling it closed, reconcile any later specialist
-reports into this ledger, resolve the concurrency-field name, agree remediation
-scope and acceptance tests, implement fixes in dependency order, and rerun the
+reports into this ledger, apply the resolved concurrency-field compatibility
+contract, agree remediation scope and acceptance tests, implement fixes in dependency order, and rerun the
 appropriate isolated recovery, PostgreSQL/service, frontend, browser, scale, and
 smoke gates. None of that remediation has begun in this workstream.
