@@ -42,6 +42,7 @@ into PostgreSQL evidence.
 | A failing `gzip -dc /tmp/bad.gz | cat` followed by a success echo | The pipeline exited 0 and reached the success path because POSIX reports the final pipeline member. This directly demonstrates the restore decompression-status bug without touching a database. |
 | Disposable PostgreSQL 16.4 databases, migrated through `0003_background`, driven through the frozen backend environment | Confirmed torn Note responses, stale ORM identity after an unlocked preload followed by `FOR UPDATE`, no-op recurring-delete series bumps, the reminder backlog loss, cleanup backlog, exact grace and claim-expiry boundaries, and recovery-token/outbox behavior. Temporary databases, containers, and `/tmp` drivers were removed. |
 | `COMPOSE_PROJECT_NAME=notetaker-oracle-01 MAILPIT_UI_PORT=0 docker compose build backend`, then isolated `up -d --wait postgres redis mailpit`, `docker compose run --rm migrate`, and `docker compose run --rm --no-deps ... backend uv run --frozen pytest -c /app/pyproject.toml -vv /tmp/notetaker_oracle_test.py` | 2 passed in 3.47s. This oracle proved English/Russian/literal search, tag intersection, status and half-open filters, stable sort/page behavior, empty out-of-range pages, and Upcoming boundaries/totals across four shared pages. The project was removed with `docker compose down -v`. This closes the earlier backend-list correctness concern; the confirmed Upcoming UI pager defect remains. |
+| Isolated 10,000-occurrence, zero-reminder-offset materialization run | Completed in **15.409 seconds**. Performance status is **Partial / target miss** for this measured case. Hardware/workload percentile thresholds remain pending, and discovery stays open until the maximum permitted worst-case reminder-offset result is available and reconciled. |
 | Isolated persistence project `nt-persist-1789011146` | Settings, tags, an ordinary note, three reminder rules/nine cycles, and a three-note series with override/cancellation survived sequential PostgreSQL, Redis, backend, worker, and Beat restarts byte-for-byte. A within-grace reminder produced one Mailpit message/notification; a beyond-grace reminder became missed with none. Restart ordering itself consumed about 10–11 seconds while migration ran, which remains relevant to short grace windows. |
 | Isolated realtime project `rt-audit-20260310` | After Redis stopped, an existing socket got `resync_required` in 0.186s but stayed open; a late socket got no initial degraded signal; readiness stayed 200; a durable tag mutation was unseen by both sockets for 32.012s. Redis recovery delivered resync and the queued event. The project was removed with volumes. |
 | Isolated deployment-negative projects `nt-audit-neg` and `nt-audit-bypass` | A forced migrate exit 42 made initial `docker compose up --wait --wait-timeout 90` fail and kept dependents unstarted. After a later failed migrate, `docker compose restart backend worker beat` still exited 0 and made writers/readiness healthy while `/notes` failed with `UndefinedTableError`; frontend health also masked a proxied API 502. Both projects and volumes were removed. |
@@ -395,8 +396,10 @@ These are missing proof, not automatic functional failures:
 6. **Medium evidence risk:** the audit reproduced open-socket and late-join Redis
    degradation. Longer outage cycles, process-crash timing, cross-browser timezone
    conformance, and the resolved recurrence overlap UX remain unproved.
-7. **Low evidence risk:** exact 10,000-occurrence materialization latency, hardware
-   percentiles, and browser/UI p95 responsiveness.
+7. **Low evidence risk:** the zero-reminder-offset 10,000-occurrence case is now
+   measured at 15.409 seconds and is a Partial / target miss. The maximum permitted
+   worst-case reminder-offset case, hardware percentiles, and browser/UI p95
+   responsiveness remain open.
 
 ## Refuted findings and allowed limits
 
@@ -449,6 +452,82 @@ These are missing proof, not automatic functional failures:
   response is promised.
 
 ## Contract decisions
+
+### Binding storage, legacy-data, and activation contract
+
+The storage change is one activation-irreversible Alembic revision named
+`0004_storage_contract`. It runs during a planned **full writer outage**: backend,
+worker, Beat, migration bypasses, and every other database writer are stopped before
+the revision starts and remain stopped until the new application version is ready.
+There is no online-expand/contract sequence, action backfill, dual-write period, or
+mixed-version writer window.
+
+Existing recurring-Trash state is not guessed into action groups. After `0004`, the
+exact legacy-row predicate is:
+
+```sql
+note.series_id IS NOT NULL
+AND note.deleted_at IS NOT NULL
+AND note.series_trashed_at IS NOT NULL
+AND note.superseded_at IS NULL
+AND note.purged_at IS NULL
+AND NOT EXISTS (
+  SELECT 1 FROM recurring_trash_action_members member
+  WHERE member.note_id = note.id
+)
+```
+
+Action identity and membership rows remain after restore or expiry, so the
+`NOT EXISTS` test stays definitive; a nullable current pointer alone is not legacy
+provenance. A row satisfying the predicate is restorable only until its unchanged
+`deleted_at + 30 days` deadline. Each match is an independent legacy restore unit,
+even when several rows have the same timestamp or series. Restore must target one
+legacy note ID, atomically clear that note's `deleted_at` and
+`series_trashed_at`, and reconcile only that occurrence's future reminders. It must
+not infer or restore a timestamp-, boundary-, or series-wide group. No migration
+creates synthetic actions or action members for these rows. Individual restore of
+a true action member instead returns stable `409 grouped_restore_required` and the
+member can be restored only through atomic restore-by-action.
+
+All new recurring portion-Trash writes use a new immutable trash-action row, immutable
+one-row-per-note action membership, and a nullable current-action pointer on each
+Note. An action records the commanded series/scope and creation time. Its member
+set never changes. The Note pointer is the sole current ownership discriminator;
+restoring an action atomically affects only members whose pointer still names that
+action, then clears those pointers. Historical action and member rows are retained
+as bounded technical facts and are never repurposed. New recurring portion-trash
+code does not write `series_trashed_at`; new individual-note trash writes only
+`deleted_at`; and legacy restore does not create an action.
+
+A split is rejected atomically with a stable conflict if its affected range crosses
+any still-restorable Trash state: either a row matching the legacy predicate above
+or a row with a live current-action pointer. It must not reuse, rewrite, clear, or
+re-parent those rows. Expired or purged technical tombstones are not restorable;
+they remain subject to the separate collision, purge, and lineage rules.
+
+`RecurrenceSeries` gains its own nullable `purged_at`. Once a segment has no visible
+or restorable member and retention expires, cleanup redacts its user-authored
+fields and associations, sets `purged_at`, and normal reads and mutations return the
+same 404 projection as purged notes. The marker is technical retention state, not a
+way to expose the redacted series.
+
+`ReminderDelivery` and `OutboxEvent` each gain exactly one persisted `error_code`
+field whose values come from a closed, documented allowlist. Migration/activation
+maps any needed unresolved legacy failure to a non-sensitive generic legacy code
+(or null where no failure state requires a code), scrubs existing raw values, and
+drops `ReminderDelivery.error` and `OutboxEvent.last_error`. Neither table gets a
+second detail/message/class field. Application code and logs must not persist raw
+exception text, arguments, class names, URLs, provider responses, recipient or note
+content, credentials, or tokens.
+
+This is an operationally one-way storage contract. Before activation, and only with
+proof that no new action/membership write committed, the operator may keep traffic
+closed, downgrade `0004`, and reinstall the old release everywhere. Rollback to an
+old writer is unsupported once write traffic is activated or the first new action
+write commits, whichever occurs first. Recovery after that point means roll forward
+or restore a pre-cutover database backup together with its matching old application
+and accept loss of later writes; it never means dropping action data or starting old
+writers against the activated schema.
 
 ### Binding database lock protocol
 
@@ -536,10 +615,13 @@ remains additive remediation design and must not be assembled by a later,
 independent READ COMMITTED query.
 
 Quantitative performance acceptance remains owner approval work. The existing
-500 ms direct-SQL check is only a host-sensitive regression tripwire. Do not claim
-API/UI percentiles, cold-start bounds, reminder burst capacity, or 10,000-row
-materialization targets until the hardware envelope, workloads, sample sizes,
-percentiles, and thresholds are approved.
+500 ms direct-SQL check is only a host-sensitive regression tripwire. The measured
+10,000-occurrence, zero-reminder-offset materialization took 15.409 seconds and is
+therefore recorded as **Partial / target miss**, not a pass. Discovery remains open
+until the maximum permitted worst-case reminder-offset result is known. Do not claim
+API/UI percentiles, cold-start bounds, reminder burst capacity, or a final
+materialization acceptance result until the hardware envelope, workloads, sample
+sizes, percentiles, and thresholds are approved.
 
 ## Exit condition
 
