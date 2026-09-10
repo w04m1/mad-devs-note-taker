@@ -38,10 +38,10 @@ into PostgreSQL evidence.
 | `cd backend && .venv/bin/pytest -q` | 18 passed, 28 skipped, with two dependency deprecation warnings. The skipped cases need `TEST_DATABASE_URL`; this lightweight run is not PostgreSQL/service evidence. |
 | `cd frontend && pnpm test -- --run` | 12 files and 30 tests passed. A temporary audit-only suite separately passed 5/5 before its owner deleted it. |
 | `QA_COMPOSE_PROJECT_NAME=<isolated-name> ./scripts/test-postgres.sh tests/integration/test_background_jobs.py tests/integration/test_runtime_services.py` | 9 selected real PostgreSQL/Redis/Celery/Mailpit tests passed in a fresh isolated project. Its containers, volumes, and temporary test file were removed. |
-| `sh -c 'set -eu; (echo dump-error >&2; exit 42) | gzip >/tmp/masked.sql.gz; echo status-success'` | Exited 0, printed the success marker, and produced a valid 20-byte empty gzip member. This directly demonstrates the backup pipeline status bug. |
-| A failing `gzip -dc /tmp/bad.gz | cat` followed by a success echo | The pipeline exited 0 and reached the success path because POSIX reports the final pipeline member. This directly demonstrates the restore decompression-status bug without touching a database. |
-| Disposable PostgreSQL 16.4 databases, migrated through `0003_background`, driven through the frozen backend environment | Confirmed torn Note responses, stale ORM identity after an unlocked preload followed by `FOR UPDATE`, no-op recurring-delete series bumps, the reminder backlog loss, cleanup backlog, exact grace and claim-expiry boundaries, and recovery-token/outbox behavior. Temporary databases, containers, and `/tmp` drivers were removed. |
-| `COMPOSE_PROJECT_NAME=notetaker-oracle-01 MAILPIT_UI_PORT=0 docker compose build backend`, then isolated `up -d --wait postgres redis mailpit`, `docker compose run --rm migrate`, and `docker compose run --rm --no-deps ... backend uv run --frozen pytest -c /app/pyproject.toml -vv /tmp/notetaker_oracle_test.py` | 2 passed in 3.47s. This oracle proved English/Russian/literal search, tag intersection, status and half-open filters, stable sort/page behavior, empty out-of-range pages, and Upcoming boundaries/totals across four shared pages. The project was removed with `docker compose down -v`. This closes the earlier backend-list correctness concern; the confirmed Upcoming UI pager defect remains. |
+| `sh -c 'set -eu; (echo dump-error >&2; exit 42) | gzip >/tmp/masked.sql.gz; echo status-success'` | Exited 0, printed the success marker, and produced a valid 20-byte empty gzip member. This directly demonstrates the backup pipeline status bug. `/tmp/masked.sql.gz` was deleted and was not retained as an artifact. |
+| A failing `gzip -dc /tmp/bad.gz | cat` followed by a success echo | The pipeline exited 0 and reached the success path because POSIX reports the final pipeline member. This directly demonstrates the restore decompression-status bug without touching a database. `/tmp/bad.gz` was deleted and was not retained as an artifact. |
+| Disposable PostgreSQL 16.4 databases, migrated through `0003_background`, exercised by audit drivers in the frozen backend environment | Confirmed torn Note responses, stale ORM identity after an unlocked preload followed by `FOR UPDATE`, no-op recurring-delete series bumps, the reminder backlog loss, cleanup backlog, exact grace and claim-expiry boundaries, and recovery-token/outbox behavior. Temporary databases, containers, and the original `/tmp` working copies of the drivers were removed. Selected historical driver files were archived later as described below; those files support source review but do not independently prove execution or results. |
+| `COMPOSE_PROJECT_NAME=notetaker-oracle-01 MAILPIT_UI_PORT=0 docker compose build backend`, then isolated `up -d --wait postgres redis mailpit`, `docker compose run --rm migrate`, and `docker compose run --rm --no-deps ... backend uv run --frozen pytest -c /app/pyproject.toml -vv /tmp/notetaker_oracle_test.py` | 2 passed in 3.47s. This oracle proved English/Russian/literal search, tag intersection, status and half-open filters, stable sort/page behavior, empty out-of-range pages, and Upcoming boundaries/totals across four shared pages. The historical oracle source is archived at `/home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-39549d33/audit-temp-archive-20260910T0730Z/evidence/tmp/notetaker_oracle_test.py`; source retention supports review of the test logic but does not by itself prove the recorded run. The project was removed with `docker compose down -v`. This closes the earlier backend-list correctness concern; the confirmed Upcoming UI pager defect remains. |
 | Isolated exactly-10,000-occurrence materialization matrix | With one cold and three warm requests per case, the zero-offset warm median was **15.740 seconds**. The all-three-offset warm median was **99.940 seconds**, with warm runs from **89.061 to 105.497 seconds**. All eight requests returned 201 with 10,000 occurrences and atomic visibility. |
 | Isolated persistence project `nt-persist-1789011146` | Settings, tags, an ordinary note, three reminder rules/nine cycles, and a three-note series with override/cancellation survived sequential PostgreSQL, Redis, backend, worker, and Beat restarts byte-for-byte. A within-grace reminder produced one Mailpit message/notification; a beyond-grace reminder became missed with none. Restart ordering itself consumed about 10–11 seconds while migration ran, which remains relevant to short grace windows. |
 | Isolated realtime project `rt-audit-20260310` | After Redis stopped, an existing socket got `resync_required` in 0.186s but stayed open; a late socket got no initial degraded signal; readiness stayed 200; a durable tag mutation was unseen by both sockets for 32.012s. Redis recovery delivered resync and the queued event. The project was removed with volumes. |
@@ -85,10 +85,23 @@ artifacts and teardown proof remain at:
 /home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-88582517/01a089ac-d812-75cc-ba76-9abaaa121b07/
 ```
 
+Selected historical audit inputs and outputs were later copied to this archive root:
+
+```
+/home/w04m1/.prime/agent/session-artifacts/01a08757-0adb-729d-a77e-7f4db1bf55e7/sub-39549d33/audit-temp-archive-20260910T0730Z/
+```
+
+`MANIFEST.json` inventories the archived snapshot, and `SHA256SUMS` records hashes
+for its files. They support path and integrity checks of the snapshot; neither the
+archive nor a retained driver independently proves that a command ran or produced
+the result recorded above. See `SENSITIVE-LOCAL-WARNING.md` before handling the
+archive.
+
 The audit also inspected generated OpenAPI, Compose configuration, Alembic head,
-tracked E2E artifacts, and source paths. `tests/e2e/artifacts/results/.last-run.json`
-only supports that the last retained run passed. It does not independently prove
-scenario count, duration, freshness, or coverage.
+E2E output, and source paths. The generated
+`tests/e2e/artifacts/results/.last-run.json` output was inspected but not retained.
+It is not standalone evidence of a pass, scenario count, duration, freshness, or
+coverage.
 
 ### Historical evidence retained from `docs/verification.md`
 
